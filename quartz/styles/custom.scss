@@ -98,3 +98,14 @@ a.internal {
     background-size: 90px 54px;
   }
 }
+
+// Quiet, centred footer.
+footer {
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.8;
+  & ul {
+    justify-content: center;
+    padding-left: 0;
+  }
+}
