@@ -15,6 +15,10 @@ const groups = [
       ["return 2+Math.sqrt(D)", "return 5+2*Math.sqrt(D)", 2],
       // Labels start visible instead of appearing only after the first zoom.
       ["lu.alpha=0", "lu.alpha=1", 1],
+      // Clicking a node navigates like the rest of the site instead of reloading the page,
+      // so the ambient sound keeps playing; the big graph closes on the way.
+      ["window.location.href=D", '(document.querySelectorAll(".global-graph-outer.active").forEach(function(e){e.classList.remove("active")}),window.spaNavigate?window.spaNavigate(new URL(D,location.href)):window.location.href=D)', 1],
+      ["window.location.href=F", '(document.querySelectorAll(".global-graph-outer.active").forEach(function(e){e.classList.remove("active")}),window.spaNavigate?window.spaNavigate(new URL(F,location.href)):window.location.href=F)', 1],
       // Lift labels a little higher in the small page graph (scale > 1); the big graph keeps the default.
       ["lu.anchor.set(.5,1.2)", "lu.anchor.set(.5,Vu>1?1.5:1.2)", 1],
       // The plugin's own Russian title «Вид графа» (stored escaped) becomes «Звёзды».
@@ -48,7 +52,7 @@ for (const { files, patches } of groups) {
   for (const file of files) {
     let src = fs.readFileSync(file, "utf8")
     for (const [from, to, count] of patches) {
-      if (src.includes(to) && !src.includes(from)) continue // already patched
+      if (src.includes(to)) continue // already patched
       const found = src.split(from).length - 1
       if (found !== count) {
         console.error(`patch-plugins: ${file}: expected ${count} of "${from}", found ${found}`)
