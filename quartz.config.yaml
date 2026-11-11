@@ -15,30 +15,30 @@ configuration:
     fontOrigin: googleFonts
     cdnCaching: true
     typography:
-      header: Schibsted Grotesk
-      body: Source Sans Pro
+      header: Cormorant SC
+      body: Lora
       code: IBM Plex Mono
     colors:
       lightMode:
-        light: "#faf8f8"
-        lightgray: "#e5e5e5"
-        gray: "#b8b8b8"
-        darkgray: "#4e4e4e"
-        dark: "#2b2b2b"
-        secondary: "#284b63"
-        tertiary: "#84a59d"
-        highlight: rgba(143, 159, 169, 0.15)
-        textHighlight: "#fff23688"
+        light: "#f4eedf"
+        lightgray: "#ddd3bb"
+        gray: "#9a8f78"
+        darkgray: "#3a3326"
+        dark: "#1f1a12"
+        secondary: "#8a6418"
+        tertiary: "#b08a3a"
+        highlight: rgba(138, 100, 24, 0.08)
+        textHighlight: "#e8cc8488"
       darkMode:
-        light: "#161618"
-        lightgray: "#393639"
-        gray: "#646464"
-        darkgray: "#d4d4d4"
-        dark: "#ebebec"
-        secondary: "#7b97aa"
-        tertiary: "#84a59d"
-        highlight: rgba(143, 159, 169, 0.15)
-        textHighlight: "#b3aa0288"
+        light: "#141726"
+        lightgray: "#2c3150"
+        gray: "#7f86ad"
+        darkgray: "#d9d3c2"
+        dark: "#efe6cf"
+        secondary: "#d8b65e"
+        tertiary: "#e8cc84"
+        highlight: rgba(216, 182, 94, 0.10)
+        textHighlight: "#d8b65e55"
   links:
     markdownLinkResolution: shortest
   contentIndex:
@@ -106,7 +106,7 @@ plugins:
   - source: "@quartz-community/quartz-fonts"
     enabled: true
   - source: "@quartz-themes/core"
-    enabled: true
+    enabled: false
     options:
       theme: its-theme
       mode: both
