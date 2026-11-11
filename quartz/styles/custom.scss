@@ -66,11 +66,11 @@ a.internal {
 .center::before {
   content: "";
   position: absolute;
-  top: 0.9rem;
+  top: 0.7rem;
   left: 50%;
   transform: translateX(-50%);
-  width: 76px;
-  height: 46px;
+  width: 90px;
+  height: 54px;
   pointer-events: none;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 60'%3E%3Cpath d='M5 30 C25 5 71 5 91 30 C71 55 25 55 5 30 Z' fill='%23d9d3c2' stroke='%23141726' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='30' r='11' fill='%23d8b65e'/%3E%3Ccircle cx='48' cy='30' r='4.5' fill='%23141726'/%3E%3C/svg%3E") center / contain no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 60'%3E%3Cpath d='M5 30 C25 5 71 5 91 30 C71 55 25 55 5 30 Z' fill='%23d9d3c2' stroke='%23141726' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='30' r='11' fill='%23d8b65e'/%3E%3Ccircle cx='48' cy='30' r='7' fill='%23141726'/%3E%3C/svg%3E") center / contain no-repeat;
 }
