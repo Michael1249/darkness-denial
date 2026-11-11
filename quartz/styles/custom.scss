@@ -130,3 +130,9 @@ footer {
     opacity: 1;
   }
 }
+
+// The ∅ that leads home in the breadcrumbs.
+.breadcrumb-container .breadcrumb-element:first-child a {
+  font-weight: 700;
+  font-size: 1.15em;
+}
