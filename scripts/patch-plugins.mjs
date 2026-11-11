@@ -29,6 +29,17 @@ const groups = [
       ["\\u041F\\u0440\\u043E\\u0432\\u043E\\u0434\\u043D\\u0438\\u043A", "\\u0413\\u0440\\u0438\\u043B\\u0438\\u0432\\u0435\\u0439", 1],
     ],
   },
+  {
+    // Search: the bar asks «Кто ты?» instead of «Поиск» / «Найти что-нибудь».
+    files: [
+      "node_modules/@quartz-community/search/dist/index.js",
+      "node_modules/@quartz-community/search/dist/components/index.js",
+    ],
+    patches: [
+      ['"\\u041F\\u043E\\u0438\\u0441\\u043A"', '"\\u041A\\u0442\\u043E \\u0442\\u044B?"', 1],
+      ['"\\u041D\\u0430\\u0439\\u0442\\u0438 \\u0447\\u0442\\u043E-\\u043D\\u0438\\u0431\\u0443\\u0434\\u044C"', '"\\u041A\\u0442\\u043E \\u0442\\u044B?"', 1],
+    ],
+  },
 ]
 
 for (const { files, patches } of groups) {

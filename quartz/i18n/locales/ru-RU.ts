@@ -51,8 +51,8 @@ export default {
       linkToOriginal: "Ссылка на оригинал",
     },
     search: {
-      title: "Поиск",
-      searchBarPlaceholder: "Найти что-нибудь",
+      title: "Кто ты?",
+      searchBarPlaceholder: "Кто ты?",
     },
     tableOfContents: {
       title: "Оглавление",
