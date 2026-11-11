@@ -42,8 +42,8 @@ jobs:
         run: npm ci
       - name: Install Quartz plugins
         run: npx quartz plugin install
-      - name: Patch graph plugin
-        run: node scripts/patch-graph.mjs
+      - name: Patch plugins
+        run: node scripts/patch-plugins.mjs
       - name: Build Quartz
         run: npx quartz build
       - name: Upload artifact

@@ -33,7 +33,7 @@ export default {
       title: "Режим чтения",
     },
     explorer: {
-      title: "Проводник",
+      title: "Гриливей",
     },
     footer: {
       createdWith: "Создано с помощью",
