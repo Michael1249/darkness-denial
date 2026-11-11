@@ -57,14 +57,19 @@ a.internal {
 }
 
 // The eye at the top of every page, looking straight at the reader.
-// Drawn as a mask so it takes the theme's gold in both modes.
+// It sits in the existing gap above the title, so the page does not move.
+.center {
+  position: relative;
+}
+
 .center::before {
   content: "";
-  display: block;
-  width: 88px;
-  height: 56px;
-  margin: 1.5rem auto 0.5rem;
-  background-color: var(--secondary);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 60'%3E%3Cpath d='M5 30 C25 5 71 5 91 30 C71 55 25 55 5 30 Z' fill='none' stroke='black' stroke-width='4' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='30' r='15' fill='none' stroke='black' stroke-width='4'/%3E%3Ccircle cx='48' cy='30' r='7' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 60'%3E%3Cpath d='M5 30 C25 5 71 5 91 30 C71 55 25 55 5 30 Z' fill='none' stroke='black' stroke-width='4' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='30' r='15' fill='none' stroke='black' stroke-width='4'/%3E%3Ccircle cx='48' cy='30' r='7' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
+  position: absolute;
+  top: 0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 76px;
+  height: 46px;
+  pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 60'%3E%3Cpath d='M5 30 C25 5 71 5 91 30 C71 55 25 55 5 30 Z' fill='white' stroke='black' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='30' r='11' fill='black'/%3E%3C/svg%3E") center / contain no-repeat;
 }
