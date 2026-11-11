@@ -153,6 +153,15 @@ plugins:
       priority: 50
   - source: "@quartz-community/graph"
     enabled: true
+    options:
+      localGraph:
+        fontSize: 0.9
+        opacityScale: 4.75
+        linkDistance: 45
+      globalGraph:
+        fontSize: 1.0
+        opacityScale: 4.75
+        linkDistance: 60
     layout:
       position: right
       priority: 10
