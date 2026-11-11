@@ -15,6 +15,8 @@ const groups = [
       ["return 2+Math.sqrt(D)", "return 5+2*Math.sqrt(D)", 2],
       // Labels start visible instead of appearing only after the first zoom.
       ["lu.alpha=0", "lu.alpha=1", 1],
+      // Lift labels a little higher in the small page graph (scale > 1); the big graph keeps the default.
+      ["lu.anchor.set(.5,1.2)", "lu.anchor.set(.5,Vu>1?1.5:1.2)", 1],
       // The plugin's own Russian title «Вид графа» (stored escaped) becomes «Звёзды».
       ["\\u0412\\u0438\\u0434 \\u0433\\u0440\\u0430\\u0444\\u0430", "\\u0417\\u0432\\u0451\\u0437\\u0434\\u044B", 1],
     ],
