@@ -79,3 +79,22 @@ a.internal {
 :root[saved-theme="light"] .center::before {
   display: none;
 }
+
+// On wide screens in dark mode the eye's gap stays pinned to the top while the
+// text scrolls under it. The side panels are equal, so the centre column is
+// centred in the window and a full-width band keeps the eye above it.
+@media all and ($desktop) {
+  :root[saved-theme="dark"] .center::before {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 5.5rem;
+    transform: none;
+    z-index: 20;
+    background-color: var(--light);
+    background-position: center top 0.7rem;
+    background-size: 90px 54px;
+  }
+}
