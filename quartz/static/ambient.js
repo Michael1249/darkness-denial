@@ -7,7 +7,7 @@
   const src = new URL("ambient.mp3", document.currentScript.src).href
   const audio = new Audio(src)
   audio.loop = true
-  audio.volume = 0.5
+  audio.volume = 0.2
   let muted = false
   try {
     muted = localStorage.getItem("dd-ambient-muted") === "1"
