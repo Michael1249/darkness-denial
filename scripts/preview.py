@@ -6,6 +6,7 @@ and refresh; there is no hot reload.
 Usage: python3 scripts/preview.py [port]
 """
 import http.server
+import io
 import os
 import sys
 import urllib.parse
@@ -27,11 +28,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return full
 
     def send_head(self):
+        # The root answers 200 with a redirect page, so tools that wait for the
+        # server to be ready (they probe "/") see it as up.
         if urllib.parse.urlsplit(self.path).path == "/":
-            self.send_response(302)
-            self.send_header("Location", BASE + "/")
+            body = (f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url={BASE}/">'
+                    f'<a href="{BASE}/">{BASE}/</a>').encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            return None
+            return io.BytesIO(body)
         return super().send_head()
 
     def end_headers(self):
