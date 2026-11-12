@@ -1,5 +1,5 @@
 ---
-title: Darkness Denial
+title: "∅"
 publish: true
 ---
 
