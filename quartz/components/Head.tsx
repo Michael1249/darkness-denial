@@ -91,6 +91,7 @@ export default (() => {
 
         <link rel="icon" href={iconPath} />
         <script src={joinSegments(baseDir, "static/ambient.js")} defer />
+        <script src={joinSegments(baseDir, "static/hypermap.js")} defer />
         <meta name="description" content={description} />
         <meta name="generator" content="Quartz" />
 
