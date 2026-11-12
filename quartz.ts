@@ -7,7 +7,7 @@ import * as ExternalPlugin from "./.quartz/plugins"
 ExternalPlugin.Explorer({
   sortFn: (a, b) => {
     // No named inner functions here: the bundler wraps them in a helper the browser lacks.
-    const order = ["о-космосе", "о-мире", "о-пустоте", "о-времени", "о-вечном"]
+    const order = ["о-космосе", "о-мире", "о-пустоте", "о-времени", "о-вечном", "о-праве"]
     const ia = order.indexOf(a.slugSegment) < 0 ? order.length : order.indexOf(a.slugSegment)
     const ib = order.indexOf(b.slugSegment) < 0 ? order.length : order.indexOf(b.slugSegment)
     if (ia !== ib) return ia - ib
