@@ -4,15 +4,18 @@ on:
   push:
     branches:
       - v5
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
+# A fresh group: four runs stuck on GitHub's side (2026-11-11) still hold the old "pages" group.
+# Only the newest push matters, so older pending builds are cancelled.
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: "pages-deploy"
+  cancel-in-progress: true
 
 jobs:
   build:
