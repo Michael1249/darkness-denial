@@ -162,6 +162,25 @@ footer {
   canvas.dd-grabbing {
     cursor: grabbing;
   }
+
+  &.dd-hypermap-max {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  &:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
 }
 
 .dd-hypermap-bar {
@@ -182,4 +201,8 @@ footer {
     font: 600 20px/1 var(--headerFont);
     cursor: pointer;
   }
+}
+
+html.dd-hypermap-lock {
+  overflow: hidden;
 }

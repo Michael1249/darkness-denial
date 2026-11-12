@@ -80,7 +80,7 @@ void main(){
 }`
   const LINE_V = `${COMMON}
 attribute vec2 p; attribute vec2 q; attribute vec2 corner; attribute vec3 style;
-varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed;
+varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong;
 void main(){
   vec2 P = mob(p), Q = mob(q);
   vec2 X = corner.x < .5 ? P : Q;
@@ -92,17 +92,24 @@ void main(){
   vAlpha = style.y * clamp(wpx / .7, .12, 1.);
   float full = shown + 1.;
   vec2 pos = px(X) + dir * (corner.x * 2. - 1.) * shown * .5 + n * corner.y * full * .5;
-  vSide = corner.y; vWidth = full; vRed = style.z;
+  vSide = corner.y; vWidth = full; vRed = style.z; vAlong = corner.x;
   gl_Position = clip(pos, 0.);
 }`
   const LINE_F = `
 precision highp float;
-varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed;
+varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong;
 uniform vec3 ink; uniform vec3 red;
 void main(){
   float fromEdge = (1. - abs(vSide)) * vWidth * .5;
   float a = vAlpha * clamp(fromEdge, 0., 1.);
-  gl_FragColor = vec4(mix(ink, red, vRed) * a, a);
+  vec3 c = vRed > .5 && vRed < 1.5 ? red : ink;
+  if (vRed > 1.5 && vWidth > 6.) {
+    // a wide river: two inked banks, pale water, a broken flow streak down the middle
+    float bank = 1. - smoothstep(1.1, 2.1, fromEdge);
+    float streak = (1. - smoothstep(.35, .9, abs(vSide) * vWidth * .5)) * step(.3, vAlong) * step(vAlong, .72) * .45;
+    a = vAlpha * max(max(bank, streak), .07);
+  }
+  gl_FragColor = vec4(c * a, a);
 }`
   const SPRITE_V = `${COMMON}
 attribute vec2 c; attribute vec2 corner; attribute vec4 uv; attribute vec3 anchorSize;
@@ -265,7 +272,7 @@ void main(){
       ]
       for (const l of world.lines) {
         const pts = l.pts
-        const red = l.c === "red" ? 1 : 0
+        const red = l.k === "rhumb" ? 1 : l.k === "river" ? 2 : 0
         for (let i = 0; i + 3 < pts.length; i += 2) {
           for (const [t, s] of CORNERS) {
             lv[o++] = pts[i]
@@ -465,6 +472,34 @@ void main(){
     }
     button("+", "Ближе", () => zoomAt(...centre(), 1.5))
     button("−", "Дальше", () => zoomAt(...centre(), 1 / 1.5))
+    // full screen; where the browser refuses it (embedded views), fill the window instead
+    const maximise = (on) => {
+      host.classList.toggle("dd-hypermap-max", on)
+      document.documentElement.classList.toggle("dd-hypermap-lock", on)
+      redraw()
+    }
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && host.classList.contains("dd-hypermap-max")) maximise(false)
+    })
+    button("⛶", "Во весь экран", () => {
+      const doc = document
+      if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+        ;(doc.exitFullscreen || doc.webkitExitFullscreen).call(doc)
+        return
+      }
+      if (host.classList.contains("dd-hypermap-max")) {
+        maximise(false)
+        return
+      }
+      const ask = host.requestFullscreen || host.webkitRequestFullscreen
+      const tried = ask ? Promise.resolve(ask.call(host)) : Promise.reject()
+      tried
+        .then(() => new Promise((r) => setTimeout(r, 250)))
+        .then(() => {
+          if (!doc.fullscreenElement && !doc.webkitFullscreenElement) maximise(true)
+        })
+        .catch(() => maximise(true))
+    })
     button("✦", "К Древу", () => {
       const step = () => {
         const tree = apply(view, [0, 0])
