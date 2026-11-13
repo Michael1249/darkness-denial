@@ -88,8 +88,8 @@ void main(){
   vec2 dir = Qs - Ps; float L = length(dir); dir = L > 1e-4 ? dir / L : vec2(1., 0.);
   vec2 n = vec2(-dir.y, dir.x);
   float wpx = style.x * unit(X);
-  bool river = style.z > 1.5 && style.z < 2.5;
-  float least = river ? 1.5 : .7;          // rivers stay visible from afar
+  bool river = (style.z > 1.5 && style.z < 2.5) || (style.z > 4.5 && style.z < 5.5);
+  float least = river ? 2.2 : .7;          // rivers stay visible from afar
   float shown = max(wpx, least);
   vAlpha = style.y * (river ? 1. : clamp(wpx / .7, .12, 1.));
   float full = shown + 1.;
@@ -104,13 +104,23 @@ uniform vec3 ink; uniform vec3 red;
 void main(){
   float fromEdge = (1. - abs(vSide)) * vWidth * .5;
   float a = vAlpha * clamp(fromEdge, 0., 1.);
-  vec3 c = (vRed > .5 && vRed < 1.5) || vRed > 3.5 ? red : ink;
-  if (vRed > 2.5) {
+  vec3 c = (vRed > .5 && vRed < 1.5) || (vRed > 3.5 && vRed < 4.5) || vRed > 5.5 ? red : ink;
+  if (vRed > 4.5 && vRed < 5.5) {
+    // a limb of the Tree: inked bark edges, solid paper wood, grain along the limb
+    float edge = 1. - smoothstep(1.2, 2.2, fromEdge);
+    float grain = step(.8, fract(vDist / .035 + abs(vSide) * 2.)) * (1. - smoothstep(.0, .9, abs(abs(vSide) - .45))) * .5;
+    vec3 wood = vec3(.93, .87, .74);
+    vec3 col = mix(wood, ink, max(edge, grain));
+    float a2 = vAlpha * clamp(fromEdge, 0., 1.);
+    gl_FragColor = vec4(col * a2, a2);
+    return;
+  }
+  if (vRed > 2.5 && vRed < 4.5) {
     // roads: dashes; sea routes: shorter dashes (lengths in hyperbolic units)
     float period = vRed > 3.5 ? .035 : .028;
     if (fract(vDist / period) > (vRed > 3.5 ? .45 : .62)) discard;
   }
-  if (vRed > 1.5 && vWidth > 6.) {
+  if (vRed > 1.5 && vRed < 2.5 && vWidth > 6.) {
     // a wide river: two inked banks, pale water, a broken flow streak down the middle
     float bank = 1. - smoothstep(1.1, 2.1, fromEdge);
     float streak = (1. - smoothstep(.35, .9, abs(vSide) * vWidth * .5)) * step(.3, vAlong) * step(vAlong, .72) * .45;
@@ -150,7 +160,7 @@ uniform float dpr;
 void main(){
   vec2 C = mob(c);
   float glyph = sizes.x * unit(C);
-  vA = smoothstep(26., 40., glyph);
+  vA = smoothstep(34., 50., glyph);
   vec2 cs = px(C);
   if (vA <= 0. || cs.x < -400. || cs.y < -200. || cs.x > screen.x + 400. || cs.y > screen.y + 400.) {
     gl_Position = vec4(2., 2., 2., 1.); return;
@@ -179,6 +189,12 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       img.onload = () => resolve(img)
       img.onerror = () => resolve(null)
       img.src = base + "labels.png"
+    }),
+    new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => resolve(null)
+      img.src = base + "tree.png"
     }),
   ])
 
@@ -226,6 +242,12 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
     let lineBuf = null
     let lineCount = 0
     let spriteBuf = null
+    let treeLines = null
+    let treeSprites = null
+    let treeTex = null
+    let regions = []
+    let regionLines = null
+    let hovered = null
     let spriteCount = 0
     let limits = [3, 4, 4.5]
     const bind = (prog, buf, layout) => {
@@ -292,6 +314,26 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       gl.bindTexture(gl.TEXTURE_2D, atlasTex)
       bind(sprites, spriteBuf, SPRITE_LAYOUT)
       gl.drawArrays(gl.TRIANGLES, 0, spriteCount)
+      if (treeLines) {
+        // the Great Tree spreads over the land: limbs, then crowns, then the halls on them
+        gl.disable(gl.DEPTH_TEST)
+        gl.useProgram(lines)
+        uniforms(lines)
+        bind(lines, treeLines.buf, LINE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, treeLines.count)
+        gl.useProgram(sprites)
+        uniforms(sprites)
+        gl.bindTexture(gl.TEXTURE_2D, treeTex)
+        bind(sprites, treeSprites.buf, SPRITE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, treeSprites.count)
+      }
+      if (hovered && regionLines) {
+        gl.disable(gl.DEPTH_TEST)
+        gl.useProgram(lines)
+        uniforms(lines)
+        bind(lines, regionLines.buf, LINE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, hovered.first, hovered.count)
+      }
       if (labelTex && labelCount) {
         gl.disable(gl.DEPTH_TEST)
         gl.useProgram(labelProg)
@@ -321,13 +363,8 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       return tex
     }
-    data.then(([world, img, labelImg]) => {
+    data.then(([world, img, labelImg, treeImg]) => {
       limits = [world.limits.coast, world.limits.ocean, world.limits.ice]
-      // lines: six vertices per segment
-      let segs = 0
-      for (const l of world.lines) segs += l.pts.length / 2 - 1
-      const lv = new Float32Array(segs * 6 * 11)
-      let o = 0
       const CORNERS = [
         [0, -1],
         [1, -1],
@@ -336,41 +373,6 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
         [1, -1],
         [1, 1],
       ]
-      for (const l of world.lines) {
-        const pts = l.pts
-        const red = { rhumb: 1, river: 2, road: 3, route: 4 }[l.k] || 0
-        let run = 0
-        for (let i = 0; i + 3 < pts.length; i += 2) {
-          const za = [pts[i], pts[i + 1]]
-          const zb = [pts[i + 2], pts[i + 3]]
-          const rel = apply(inverse(shift(za)), zb)
-          const len = 2 * Math.atanh(Math.min(0.999999, Math.hypot(rel[0], rel[1])))
-          for (const [t, s] of CORNERS) {
-            lv[o++] = pts[i]
-            lv[o++] = pts[i + 1]
-            lv[o++] = pts[i + 2]
-            lv[o++] = pts[i + 3]
-            lv[o++] = t
-            lv[o++] = s
-            lv[o++] = l.w
-            lv[o++] = l.a
-            lv[o++] = red
-            lv[o++] = run
-            lv[o++] = run + len
-          }
-          run += len
-        }
-      }
-      lineCount = segs * 6
-      lineBuf = gl.createBuffer()
-      gl.bindBuffer(gl.ARRAY_BUFFER, lineBuf)
-      gl.bufferData(gl.ARRAY_BUFFER, lv, gl.STATIC_DRAW)
-
-      // glyphs: six vertices each
-      let n = 0
-      for (const k in world.sprites) n += world.sprites[k].length / 3
-      const sv = new Float32Array(n * 6 * 11)
-      o = 0
       const QUAD = [
         [0, 0],
         [1, 0],
@@ -379,32 +381,102 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
         [1, 0],
         [1, 1],
       ]
-      for (const kind in world.sprites) {
-        const cell = world.atlas[kind]
-        if (!cell) continue
-        const arr = world.sprites[kind]
-        for (let i = 0; i < arr.length; i += 3) {
-          for (const [cx, cy] of QUAD) {
-            sv[o++] = arr[i]
-            sv[o++] = arr[i + 1]
-            sv[o++] = cx
-            sv[o++] = cy
-            sv[o++] = cell[0]
-            sv[o++] = cell[1]
-            sv[o++] = cell[2]
-            sv[o++] = cell[3]
-            sv[o++] = cell[4]
-            sv[o++] = cell[5]
-            sv[o++] = arr[i + 2]
+      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6 }
+      // lines: six vertices per segment, with the run of hyperbolic length for dashes
+      const buildLines = (list) => {
+        let segs = 0
+        for (const l of list) segs += l.pts.length / 2 - 1
+        const lv = new Float32Array(segs * 6 * 11)
+        let o = 0
+        for (const l of list) {
+          const pts = l.pts
+          const style = STYLE[l.k] || 0
+          let run = 0
+          for (let i = 0; i + 3 < pts.length; i += 2) {
+            const rel = apply(inverse(shift([pts[i], pts[i + 1]])), [pts[i + 2], pts[i + 3]])
+            const len = 2 * Math.atanh(Math.min(0.999999, Math.hypot(rel[0], rel[1])))
+            for (const [t, sd] of CORNERS) {
+              lv.set([pts[i], pts[i + 1], pts[i + 2], pts[i + 3], t, sd, l.w, l.a, style, run, run + len], o)
+              o += 11
+            }
+            run += len
           }
         }
+        const buf = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+        gl.bufferData(gl.ARRAY_BUFFER, lv, gl.STATIC_DRAW)
+        return { buf, count: segs * 6 }
       }
-      spriteCount = o / 11
-      spriteBuf = gl.createBuffer()
-      gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuf)
-      gl.bufferData(gl.ARRAY_BUFFER, sv, gl.STATIC_DRAW)
+      // glyphs: six vertices each, in the order of their kinds
+      const buildSprites = (dict, atlas = world.atlas) => {
+        let n = 0
+        for (const k in dict) n += dict[k].length / 3
+        const sv = new Float32Array(n * 6 * 11)
+        let o = 0
+        for (const kind in dict) {
+          const cell = atlas[kind]
+          if (!cell) continue
+          const arr = dict[kind]
+          for (let i = 0; i < arr.length; i += 3) {
+            for (const [cx, cy] of QUAD) {
+              sv.set([arr[i], arr[i + 1], cx, cy, cell[0], cell[1], cell[2], cell[3], cell[4], cell[5], arr[i + 2]], o)
+              o += 11
+            }
+          }
+        }
+        const buf = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+        gl.bufferData(gl.ARRAY_BUFFER, sv.subarray(0, o), gl.STATIC_DRAW)
+        return { buf, count: o / 11 }
+      }
+      ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines))
+      ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
+      if (world.regions) {
+        const list = []
+        regions = world.regions.map((r) => {
+          const rings = r.rings.map((flat) => {
+            const pts = []
+            for (let i = 0; i < flat.length; i += 2) pts.push([flat[i], flat[i + 1]])
+            return pts
+          })
+          let area = 0
+          let box = [1, 1, -1, -1]
+          for (const ring of rings) {
+            for (let i = 0; i < ring.length; i++) {
+              const [x1, y1] = ring[i]
+              const [x2, y2] = ring[(i + 1) % ring.length]
+              area += x1 * y2 - x2 * y1
+              box = [Math.min(box[0], x1), Math.min(box[1], y1), Math.max(box[2], x1), Math.max(box[3], y1)]
+            }
+          }
+          const start = list.length
+          for (const flat of r.rings) {
+            list.push({ w: 0.02, a: 0.16, k: "region", pts: flat })
+            list.push({ w: 0.0035, a: 0.8, k: "region", pts: flat })
+          }
+          return { name: r.name, kind: r.kind, rings, area: Math.abs(area) / 2, box, from: start, to: list.length }
+        })
+        // vertex offsets of each region's lines inside the shared buffer
+        let v = 0
+        const offsets = list.map((l) => {
+          const o = v
+          v += (l.pts.length / 2 - 1) * 6
+          return o
+        })
+        offsets.push(v)
+        for (const r of regions) {
+          r.first = offsets[r.from]
+          r.count = offsets[r.to] - offsets[r.from]
+        }
+        regionLines = buildLines(list)
+      }
+      if (world.tree) {
+        treeLines = buildLines(world.tree.lines)
+        treeSprites = buildSprites(world.tree.sprites, world.tree.atlas || world.atlas)
+      }
 
       atlasTex = texture(img)
+      treeTex = treeImg ? texture(treeImg) : atlasTex
       if (labelImg && world.labels) {
         const items = world.labels.items
         const cells = world.labels.cells
@@ -459,6 +531,57 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       move(carry(z0, toDisk(x, y)))
       redraw()
     }
+
+    // regions: hidden until the pointer rests on one; then the smallest region under it
+    // lights up and its name shows beside the pointer
+    const tip = document.createElement("div")
+    tip.className = "dd-hypermap-tip"
+    host.appendChild(tip)
+    const inside = (ring, x, y) => {
+      let c = false
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i]
+        const [xj, yj] = ring[j]
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c
+      }
+      return c
+    }
+    const regionsAt = (cx, cy) => {
+      const w = apply(inverse(view), toDisk(cx, cy))
+      return regions
+        .filter((r) => w[0] >= r.box[0] && w[0] <= r.box[2] && w[1] >= r.box[1] && w[1] <= r.box[3])
+        .filter((r) => r.rings.some((ring) => inside(ring, w[0], w[1])))
+        .sort((a, b) => a.area - b.area)
+    }
+    const hover = (e) => {
+      if (pointers.size || e.pointerType === "touch") return
+      const r = canvas.getBoundingClientRect()
+      const found = regionsAt(e.clientX, e.clientY)
+      const top = found[0] || null
+      if (top !== hovered) {
+        hovered = top
+        redraw()
+      }
+      if (!top) {
+        tip.style.opacity = 0
+        return
+      }
+      tip.innerHTML =
+        `<b>${top.name}</b><span>${top.kind}</span>` +
+        found
+          .slice(1, 3)
+          .map((x) => `<i>${x.name}</i>`)
+          .join("")
+      tip.style.left = `${e.clientX - r.left + 14}px`
+      tip.style.top = `${e.clientY - r.top + 14}px`
+      tip.style.opacity = 1
+    }
+    canvas.addEventListener("pointermove", hover)
+    canvas.addEventListener("pointerleave", () => {
+      hovered = null
+      tip.style.opacity = 0
+      redraw()
+    })
 
     const pointers = new Map()
     let pinch = null
