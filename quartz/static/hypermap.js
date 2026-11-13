@@ -79,8 +79,8 @@ void main(){
   gl_FragColor = vec4(c, 1.);
 }`
   const LINE_V = `${COMMON}
-attribute vec2 p; attribute vec2 q; attribute vec2 corner; attribute vec3 style;
-varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong;
+attribute vec2 p; attribute vec2 q; attribute vec2 corner; attribute vec3 style; attribute vec2 along;
+varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong; varying float vDist;
 void main(){
   vec2 P = mob(p), Q = mob(q);
   vec2 X = corner.x < .5 ? P : Q;
@@ -88,21 +88,28 @@ void main(){
   vec2 dir = Qs - Ps; float L = length(dir); dir = L > 1e-4 ? dir / L : vec2(1., 0.);
   vec2 n = vec2(-dir.y, dir.x);
   float wpx = style.x * unit(X);
-  float shown = max(wpx, .7);
-  vAlpha = style.y * clamp(wpx / .7, .12, 1.);
+  bool river = style.z > 1.5 && style.z < 2.5;
+  float least = river ? 1.5 : .7;          // rivers stay visible from afar
+  float shown = max(wpx, least);
+  vAlpha = style.y * (river ? 1. : clamp(wpx / .7, .12, 1.));
   float full = shown + 1.;
   vec2 pos = px(X) + dir * (corner.x * 2. - 1.) * shown * .5 + n * corner.y * full * .5;
-  vSide = corner.y; vWidth = full; vRed = style.z; vAlong = corner.x;
+  vSide = corner.y; vWidth = full; vRed = style.z; vAlong = corner.x; vDist = mix(along.x, along.y, corner.x);
   gl_Position = clip(pos, 0.);
 }`
   const LINE_F = `
 precision highp float;
-varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong;
+varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong; varying float vDist;
 uniform vec3 ink; uniform vec3 red;
 void main(){
   float fromEdge = (1. - abs(vSide)) * vWidth * .5;
   float a = vAlpha * clamp(fromEdge, 0., 1.);
-  vec3 c = vRed > .5 && vRed < 1.5 ? red : ink;
+  vec3 c = (vRed > .5 && vRed < 1.5) || vRed > 3.5 ? red : ink;
+  if (vRed > 2.5) {
+    // roads: dashes; sea routes: shorter dashes (lengths in hyperbolic units)
+    float period = vRed > 3.5 ? .035 : .028;
+    if (fract(vDist / period) > (vRed > 3.5 ? .45 : .62)) discard;
+  }
   if (vRed > 1.5 && vWidth > 6.) {
     // a wide river: two inked banks, pale water, a broken flow streak down the middle
     float bank = 1. - smoothstep(1.1, 2.1, fromEdge);
@@ -135,12 +142,43 @@ void main(){
   gl_FragColor = t;
 }`
 
+  // name ribbons: placed above their place, sized for reading, shown once the place is big enough
+  const LABEL_V = `${COMMON}
+attribute vec2 c; attribute vec2 corner; attribute vec4 uv; attribute vec2 sizes; // glyph size (hyperbolic), ribbon width (px)
+varying vec2 vUv; varying float vA;
+uniform float dpr;
+void main(){
+  vec2 C = mob(c);
+  float glyph = sizes.x * unit(C);
+  vA = smoothstep(26., 40., glyph);
+  vec2 cs = px(C);
+  if (vA <= 0. || cs.x < -400. || cs.y < -200. || cs.x > screen.x + 400. || cs.y > screen.y + 400.) {
+    gl_Position = vec4(2., 2., 2., 1.); return;
+  }
+  float w = sizes.y * .5 * dpr * clamp(glyph / 70., .75, 1.15);
+  float h = w * (uv.w - uv.y) / (uv.z - uv.x);
+  vec2 pos = cs + vec2((corner.x - .5) * w, (corner.y - 1.) * h - glyph * .9);
+  vUv = mix(uv.xy, uv.zw, corner);
+  gl_Position = clip(pos, 0.);
+}`
+  const LABEL_F = `
+precision highp float;
+uniform sampler2D atlas;
+varying vec2 vUv; varying float vA;
+void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
+
   const data = Promise.all([
     fetch(base + "world.json").then((r) => r.json()),
     new Promise((resolve) => {
       const img = new Image()
       img.onload = () => resolve(img)
       img.src = base + "atlas.png"
+    }),
+    new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => resolve(null)
+      img.src = base + "labels.png"
     }),
   ])
 
@@ -172,12 +210,18 @@ void main(){
     const bg = program(BG_V, BG_F)
     const lines = program(LINE_V, LINE_F)
     const sprites = program(SPRITE_V, SPRITE_F)
+    const labelProg = program(LABEL_V, LABEL_F)
+    const LABEL_LAYOUT = [["c", 2], ["corner", 2], ["uv", 4], ["sizes", 2]]
+    let labelBuf = null
+    let labelCount = 0
+    let atlasTex = null
+    let labelTex = null
 
     const quad = gl.createBuffer()
     gl.bindBuffer(gl.ARRAY_BUFFER, quad)
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW)
 
-    const LINE_LAYOUT = [["p", 2], ["q", 2], ["corner", 2], ["style", 3]]
+    const LINE_LAYOUT = [["p", 2], ["q", 2], ["corner", 2], ["style", 3], ["along", 2]]
     const SPRITE_LAYOUT = [["c", 2], ["corner", 2], ["uv", 4], ["anchorSize", 3]]
     let lineBuf = null
     let lineCount = 0
@@ -245,8 +289,18 @@ void main(){
       gl.clear(gl.DEPTH_BUFFER_BIT)
       gl.useProgram(sprites)
       uniforms(sprites)
+      gl.bindTexture(gl.TEXTURE_2D, atlasTex)
       bind(sprites, spriteBuf, SPRITE_LAYOUT)
       gl.drawArrays(gl.TRIANGLES, 0, spriteCount)
+      if (labelTex && labelCount) {
+        gl.disable(gl.DEPTH_TEST)
+        gl.useProgram(labelProg)
+        uniforms(labelProg)
+        gl.uniform1f(gl.getUniformLocation(labelProg, "dpr"), devicePixelRatio)
+        gl.bindTexture(gl.TEXTURE_2D, labelTex)
+        bind(labelProg, labelBuf, LABEL_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, labelCount)
+      }
     }
     const redraw = () => {
       if (!queued) {
@@ -255,12 +309,24 @@ void main(){
       }
     }
 
-    data.then(([world, img]) => {
+    const texture = (img) => {
+      const tex = gl.createTexture()
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+      gl.generateMipmap(gl.TEXTURE_2D)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      return tex
+    }
+    data.then(([world, img, labelImg]) => {
       limits = [world.limits.coast, world.limits.ocean, world.limits.ice]
       // lines: six vertices per segment
       let segs = 0
       for (const l of world.lines) segs += l.pts.length / 2 - 1
-      const lv = new Float32Array(segs * 6 * 9)
+      const lv = new Float32Array(segs * 6 * 11)
       let o = 0
       const CORNERS = [
         [0, -1],
@@ -272,8 +338,13 @@ void main(){
       ]
       for (const l of world.lines) {
         const pts = l.pts
-        const red = l.k === "rhumb" ? 1 : l.k === "river" ? 2 : 0
+        const red = { rhumb: 1, river: 2, road: 3, route: 4 }[l.k] || 0
+        let run = 0
         for (let i = 0; i + 3 < pts.length; i += 2) {
+          const za = [pts[i], pts[i + 1]]
+          const zb = [pts[i + 2], pts[i + 3]]
+          const rel = apply(inverse(shift(za)), zb)
+          const len = 2 * Math.atanh(Math.min(0.999999, Math.hypot(rel[0], rel[1])))
           for (const [t, s] of CORNERS) {
             lv[o++] = pts[i]
             lv[o++] = pts[i + 1]
@@ -284,7 +355,10 @@ void main(){
             lv[o++] = l.w
             lv[o++] = l.a
             lv[o++] = red
+            lv[o++] = run
+            lv[o++] = run + len
           }
+          run += len
         }
       }
       lineCount = segs * 6
@@ -330,15 +404,26 @@ void main(){
       gl.bindBuffer(gl.ARRAY_BUFFER, spriteBuf)
       gl.bufferData(gl.ARRAY_BUFFER, sv, gl.STATIC_DRAW)
 
-      const tex = gl.createTexture()
-      gl.bindTexture(gl.TEXTURE_2D, tex)
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
-      gl.generateMipmap(gl.TEXTURE_2D)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      atlasTex = texture(img)
+      if (labelImg && world.labels) {
+        const items = world.labels.items
+        const cells = world.labels.cells
+        const lv2 = new Float32Array((items.length / 4) * 6 * 10)
+        let k = 0
+        for (let i = 0; i < items.length; i += 4) {
+          const cell = cells["lbl" + items[i + 3]]
+          const nativeW = (cell[2] - cell[0]) * labelImg.width
+          for (const [cx, cy] of QUAD) {
+            lv2.set([items[i], items[i + 1], cx, cy, cell[0], cell[1], cell[2], cell[3], items[i + 2], nativeW], k)
+            k += 10
+          }
+        }
+        labelCount = k / 10
+        labelBuf = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, labelBuf)
+        gl.bufferData(gl.ARRAY_BUFFER, lv2, gl.STATIC_DRAW)
+        labelTex = texture(labelImg)
+      }
       ready = true
       redraw()
     })
