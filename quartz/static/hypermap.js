@@ -821,7 +821,8 @@ void main(){
       const [x, y] = apply(inverse(view), toDisk(cx, cy))
       const hit = regions
         .filter((r) => r.set === "ground" || treeOn)
-        .filter((r) => x >= r.box[0] && x <= r.box[2] && y >= r.box[1] && y <= r.box[3] && r.rings.some((ring) => inside(ring, x, y)))
+        // even-odd over all of a region's rings, so its holes (lakes, or a land it surrounds) are not in it
+        .filter((r) => x >= r.box[0] && x <= r.box[2] && y >= r.box[1] && y <= r.box[3] && r.rings.reduce((c, ring) => c !== inside(ring, x, y), false))
         .sort((a, b) => a.area - b.area)
       // with the Tree shown, its regions lie on top of the land's
       return treeOn ? [...hit.filter((r) => r.set === "tree"), ...hit.filter((r) => r.set !== "tree")] : hit
