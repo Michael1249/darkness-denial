@@ -17,11 +17,16 @@
   // the Great Tree is a layer nearer to the eye: its zoom grows faster than the ground's
   // (TREE.a * zoom ^ TREE.p), so it is small from afar and opens up close by, and it slides
   // over the land faster as you pan: parallax
-  const TREE = { a: 0.38, p: 1.7, max: 40 }
+  // top: radius of the Tree's top over its trunk, cut: radius of the trunk cut on the ground
+  // (both hyperbolic, half-sizes as the shaders' unit() counts them); lift: how much farther
+  // the Tree slides than the ground as you pan
+  const TREE = { a: 0.42, p: 1.7, max: 40, top: 0.13, cut: 0.048, lift: 1.4 }
   const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
   const BANK = [0.29, 0.208, 0.125]
   const WATER = [0.925, 0.863, 0.706]
+  const BARK_GROUND = [0.6, 0.5, 0.38] // roots: muted towards the parchment
+  const BARK_TREE = [0.5, 0.39, 0.27]
 
   // ---- complex numbers and disk automorphisms z -> (a z + b) / (conj(b) z + conj(a))
   const mul = (p, q) => [p[0] * q[0] - p[1] * q[1], p[0] * q[1] + p[1] * q[0]]
@@ -52,10 +57,11 @@
 precision highp float;
 uniform vec4 m;      // view: a = m.xy, b = m.zw
 uniform vec4 screen; // width, height (device px), zoom, half of the smaller side
+uniform vec2 pan;    // a screen shift (device px): the Tree's layer follows its trunk with it
 vec2 cmul(vec2 p, vec2 q){ return vec2(p.x*q.x - p.y*q.y, p.x*q.y + p.y*q.x); }
 vec2 cdiv(vec2 p, vec2 q){ return vec2(p.x*q.x + p.y*q.y, p.y*q.x - p.x*q.y) / dot(q, q); }
 vec2 mob(vec2 z){ return cdiv(cmul(m.xy, z) + m.zw, cmul(vec2(m.z, -m.w), z) + vec2(m.x, -m.y)); }
-vec2 px(vec2 z){ return screen.xy * .5 + z * screen.z * screen.w; }
+vec2 px(vec2 z){ return screen.xy * .5 + z * screen.z * screen.w + pan; }
 vec4 clip(vec2 p, float depth){ return vec4(p.x / screen.x * 2. - 1., 1. - p.y / screen.y * 2., depth, 1.); }
 float unit(vec2 z){ return (1. - dot(z, z)) * .5 * screen.z * screen.w; }
 `
@@ -110,6 +116,7 @@ void main(){
 precision highp float;
 varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong; varying float vDist;
 uniform vec3 ink; uniform vec3 red; uniform float pass; uniform vec3 bank; uniform vec3 water;
+uniform vec3 bark;   // muted on the ground's roots, a little richer on the Tree's boughs
 void main(){
   float fromEdge = (1. - abs(vSide)) * vWidth * .5;
   float a = vAlpha * clamp(fromEdge, 0., 1.);
@@ -121,11 +128,15 @@ void main(){
   }
   vec3 c = (vRed > .5 && vRed < 1.5) || (vRed > 3.5 && vRed < 4.5) || vRed > 5.5 ? red : ink;
   if (vRed > 4.5 && vRed < 5.5) {
-    // a limb of the Tree: inked bark edges, solid paper wood, grain along the limb
-    float edge = 1. - smoothstep(1.2, 2.2, fromEdge);
-    float grain = step(.8, fract(vDist / .035 + abs(vSide) * 2.)) * (1. - smoothstep(.0, .9, abs(abs(vSide) - .45))) * .5;
-    vec3 wood = vec3(.66, .53, .37);
-    vec3 col = mix(wood, ink, max(edge, grain));
+    // a root or a bough: bark the colour of the trunk cut, round in the light from the
+    // north-west, long fibres running along it, inked edges
+    float v = vSide;                                   // -1 .. 1 across the limb
+    float round_ = 1. - .45 * v * v - .18 * v;         // lit on one flank, darker towards the other
+    float fib = abs(fract(v * 3.2 + .35 * sin(vDist * 23. + v * 4.)) - .5);
+    float fibre = smoothstep(.36, .5, fib) * (1. - smoothstep(.7, 1., abs(v)));
+    vec3 col = bark * round_ * (1. - .18 * fibre);
+    float edge = 1. - smoothstep(1.0, 2.0, fromEdge);
+    col = mix(col, ink, edge);
     float a2 = vAlpha * clamp(fromEdge, 0., 1.);
     gl_FragColor = vec4(col * a2, a2);
     return;
@@ -382,6 +393,8 @@ void main(){
     let queued = false
 
     const uniforms = (prog) => {
+      gl.uniform2f(gl.getUniformLocation(prog, "pan"), 0, 0)
+      gl.uniform3f(gl.getUniformLocation(prog, "bark"), ...BARK_GROUND)
       gl.uniform4f(gl.getUniformLocation(prog, "m"), view.a[0], view.a[1], view.b[0], view.b[1])
       gl.uniform4f(
         gl.getUniformLocation(prog, "screen"),
@@ -391,22 +404,40 @@ void main(){
         Math.min(canvas.width, canvas.height) / 2,
       )
     }
-    // the Tree's own view: centred on the point of its plane over the ground's centre, pushed
-    // out further (parallax), turned as the ground is turned, at its own faster zoom
+    // the Tree's own view. Its trunk stays over the trunk cut on the ground: the ground's trunk
+    // is found on screen, the Tree's is set a little farther out from the screen's centre
+    // (parallax, TREE.lift), but never so far that the Tree's top would uncover the cut; the
+    // Tree is turned as the ground is turned there, at its own faster zoom
     const treeView = () => {
-      const c = apply(inverse(view), [0, 0])
-      const r = Math.hypot(c[0], c[1])
-      const s = 1 / (TREE.a * ZOOM.min ** (TREE.p - 1))
-      let ct = [0, 0]
-      if (r > 1e-9) {
-        const k = Math.tanh(Math.atanh(Math.min(r, 0.999999)) * s) / r
-        ct = [c[0] * k, c[1] * k]
-      }
-      const turn = compose(view, shift(c))
-      return { view: compose(turn, shift([-ct[0], -ct[1]])), zoom: Math.min(TREE.max, TREE.a * zoom ** TREE.p) }
+      const zt = Math.min(TREE.max, TREE.a * zoom ** TREE.p)
+      const g = apply(view, [0, 0]) // the ground's trunk, in the view's disk
+      const G = [g[0] * zoom, g[1] * zoom] // on screen, in units of half the smaller side
+      const cut = TREE.cut * zoom * (1 - (g[0] ** 2 + g[1] ** 2))
+      // the farther the Tree's trunk lies out in its own plane, the smaller it is drawn; it may
+      // go only so far that its top still covers the cut with room to spare
+      const need = Math.min(0.97, (cut * 1.2) / (TREE.top * zt))
+      const qmax = Math.sqrt(1 - need)
+      let T = [G[0] * TREE.lift, G[1] * TREE.lift]
+      let q = clampDisk([T[0] / zt, T[1] / zt], qmax)
+      const top = TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2))
+      const room = Math.max(0, top - cut) * 0.85
+      const dx = T[0] - G[0]
+      const dy = T[1] - G[1]
+      const off = Math.hypot(dx, dy)
+      if (off > room) T = [G[0] + (dx / off) * room, G[1] + (dy / off) * room]
+      q = clampDisk([T[0] / zt, T[1] / zt], qmax)
+      // whatever the plane cannot carry is a plain shift on screen
+      const rest = [T[0] - q[0] * zt, T[1] - q[1] * zt]
+      // the ground's turn at its trunk: z -> view(z) has the argument -2 arg(a) at the origin
+      const phi = -2 * Math.atan2(view.a[1], view.a[0])
+      const turn = { a: [Math.cos(phi / 2), Math.sin(phi / 2)], b: [0, 0] }
+      return { view: compose(shift(q), turn), zoom: zt, G, T, top: TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2)), cut, rest }
     }
     const treeUniforms = (prog) => {
       const t = treeView()
+      const half = Math.min(canvas.width, canvas.height) / 2
+      gl.uniform2f(gl.getUniformLocation(prog, "pan"), t.rest[0] * half, t.rest[1] * half)
+      gl.uniform3f(gl.getUniformLocation(prog, "bark"), ...BARK_TREE)
       gl.uniform4f(gl.getUniformLocation(prog, "m"), t.view.a[0], t.view.a[1], t.view.b[0], t.view.b[1])
       gl.uniform4f(
         gl.getUniformLocation(prog, "screen"),
@@ -565,6 +596,14 @@ void main(){
     }
 
     // for checking the map by script: look at disk point (x, y) at a given zoom, drawn at once
+    // for checking by script: where the trunk and the Tree's top lie on screen for a view
+    host.__ddTree = (x, y, z) => {
+      view = carry([x, y], [0, 0])
+      zoom = Math.min(ZOOM.max, Math.max(ZOOM.min, z))
+      const t = treeView()
+      const tz = apply(t.view, [0, 0])
+      return { G: t.G, T: [tz[0] * t.zoom + t.rest[0], tz[1] * t.zoom + t.rest[1]], top: t.top, cut: t.cut }
+    }
     host.__ddLook = (x, y, z) => {
       view = carry([x, y], [0, 0])
       zoom = Math.min(ZOOM.max, Math.max(ZOOM.min, z))
@@ -742,6 +781,7 @@ void main(){
         gl.bufferData(gl.ARRAY_BUFFER, f, gl.STATIC_DRAW)
         treeFill = { buf, count: f.length / 2 }
       }
+      if (world.tree && world.tree.top) TREE.top = world.tree.top / 2
       if (world.tree) {
         treeBranches = buildLines(world.tree.lines.filter((l) => l.k === "branch"))
         treeLines = buildLines(world.tree.lines.filter((l) => l.k !== "branch"))
@@ -827,7 +867,9 @@ void main(){
     const regionsAt = (cx, cy) => {
       const w = apply(inverse(view), toDisk(cx, cy))
       const t = treeView()
-      const wt = apply(inverse(t.view), toDisk(cx, cy, t.zoom))
+      const r = canvas.getBoundingClientRect()
+      const half = Math.min(r.width, r.height) / 2
+      const wt = apply(inverse(t.view), toDisk(cx - t.rest[0] * half, cy - t.rest[1] * half, t.zoom))
       const hit = regions
         .filter((r) => r.set === "ground" || treeOn)
         .filter((r) => {
