@@ -117,6 +117,7 @@ precision highp float;
 varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong; varying float vDist;
 uniform vec3 ink; uniform vec3 red; uniform float pass; uniform vec3 bank; uniform vec3 water;
 uniform vec3 bark;   // muted on the ground's roots, a little richer on the Tree's boughs
+uniform float rounded;   // 1: boughs shaded round; 0: roots lie flat on the map
 void main(){
   float fromEdge = (1. - abs(vSide)) * vWidth * .5;
   float a = vAlpha * clamp(fromEdge, 0., 1.);
@@ -131,7 +132,7 @@ void main(){
     // a root or a bough: bark the colour of the trunk cut, round in the light from the
     // north-west, long fibres running along it, inked edges
     float v = vSide;                                   // -1 .. 1 across the limb
-    float round_ = 1. - .45 * v * v - .18 * v;         // lit on one flank, darker towards the other
+    float round_ = mix(1., 1. - .45 * v * v - .18 * v, rounded);   // lit on one flank, darker towards the other
     float fib = abs(fract(v * 3.2 + .35 * sin(vDist * 23. + v * 4.)) - .5);
     float fibre = smoothstep(.36, .5, fib) * (1. - smoothstep(.7, 1., abs(v)));
     vec3 col = bark * round_ * (1. - .18 * fibre);
@@ -395,6 +396,7 @@ void main(){
     const uniforms = (prog) => {
       gl.uniform2f(gl.getUniformLocation(prog, "pan"), 0, 0)
       gl.uniform3f(gl.getUniformLocation(prog, "bark"), ...BARK_GROUND)
+      gl.uniform1f(gl.getUniformLocation(prog, "rounded"), 0)
       gl.uniform4f(gl.getUniformLocation(prog, "m"), view.a[0], view.a[1], view.b[0], view.b[1])
       gl.uniform4f(
         gl.getUniformLocation(prog, "screen"),
@@ -438,6 +440,7 @@ void main(){
       const half = Math.min(canvas.width, canvas.height) / 2
       gl.uniform2f(gl.getUniformLocation(prog, "pan"), t.rest[0] * half, t.rest[1] * half)
       gl.uniform3f(gl.getUniformLocation(prog, "bark"), ...BARK_TREE)
+      gl.uniform1f(gl.getUniformLocation(prog, "rounded"), 1)
       gl.uniform4f(gl.getUniformLocation(prog, "m"), t.view.a[0], t.view.a[1], t.view.b[0], t.view.b[1])
       gl.uniform4f(
         gl.getUniformLocation(prog, "screen"),
