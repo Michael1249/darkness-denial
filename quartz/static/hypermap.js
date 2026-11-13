@@ -142,7 +142,7 @@ void main(){
   gl_FragColor = t;
 }`
 
-  // name ribbons: placed above their place, sized for reading, shown once the place is big enough
+  // name ribbons: placed under their place, sized for reading, shown once the place is big enough
   const LABEL_V = `${COMMON}
 attribute vec2 c; attribute vec2 corner; attribute vec4 uv; attribute vec2 sizes; // glyph size (hyperbolic), ribbon width (px)
 varying vec2 vUv; varying float vA;
@@ -157,7 +157,7 @@ void main(){
   }
   float w = sizes.y * .5 * dpr * clamp(glyph / 70., .75, 1.15);
   float h = w * (uv.w - uv.y) / (uv.z - uv.x);
-  vec2 pos = cs + vec2((corner.x - .5) * w, (corner.y - 1.) * h - glyph * .9);
+  vec2 pos = cs + vec2((corner.x - .5) * w, corner.y * h + glyph * .08);   // just below the place
   vUv = mix(uv.xy, uv.zw, corner);
   gl_Position = clip(pos, 0.);
 }`
