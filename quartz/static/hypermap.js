@@ -14,13 +14,13 @@
 
   const ZOOM = { start: 3.4, min: 1.15, max: 17 } // window radius in the disk is 1 / zoom
   const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
-  // the Great Tree is a layer nearer to the eye: its zoom grows faster than the ground's
-  // (TREE.a * zoom ^ TREE.p), so it is small from afar and opens up close by, and it slides
-  // over the land faster as you pan: parallax
+  // the Great Tree is a layer nearer to the eye, drawn at its own scale (TREE.k times the
+  // ground's): zooming scales both together, while panning slides it over the land faster:
+  // parallax only as you move
   // top: radius of the Tree's top over its trunk, cut: radius of the trunk cut on the ground
   // (both hyperbolic, half-sizes as the shaders' unit() counts them); lift: how much farther
   // the Tree slides than the ground as you pan
-  const TREE = { a: 0.42, p: 1.7, max: 40, top: 0.13, cut: 0.048, lift: 1.4 }
+  const TREE = { k: 0.46, top: 0.13, cut: 0.048, lift: 1.4 }
   const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
   const BANK = [0.29, 0.208, 0.125]
@@ -420,30 +420,66 @@ void main(){
     // (parallax, TREE.lift), but never so far that the Tree's top would uncover the cut; the
     // Tree is turned as the ground is turned there, at its own faster zoom
     let treeTwist = 0 // the Tree's own turn on top of the ground's, kept while the Tree is dragged
-    const treeView = (v = view, twist = treeTwist) => {
-      const zt = Math.min(TREE.max, TREE.a * zoom ** TREE.p)
+    // the Tree's placing: q, where its trunk lies in its own view's disk, and rest, a plain
+    // shift on screen (in units of half the smaller side). Its trunk is on screen at q * zt + rest
+    let treeSt = { q: [0, 0], rest: [0, 0] }
+    const groundTrunk = (v) => {
       const g = apply(v, [0, 0]) // the ground's trunk, in the view's disk
-      const G = [g[0] * zoom, g[1] * zoom] // on screen, in units of half the smaller side
-      const cut = TREE.cut * zoom * (1 - (g[0] ** 2 + g[1] ** 2))
-      // the farther the Tree's trunk lies out in its own plane, the smaller it is drawn; it may
-      // go only so far that its top still covers the cut with room to spare
-      const need = Math.min(0.97, (cut * 1.2) / (TREE.top * zt))
-      const qmax = Math.sqrt(1 - need)
-      let T = [G[0] * TREE.lift, G[1] * TREE.lift]
-      let q = clampDisk([T[0] / zt, T[1] / zt], qmax)
-      const top = TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2))
-      const room = Math.max(0, top - cut) * 0.85
-      const dx = T[0] - G[0]
-      const dy = T[1] - G[1]
-      const off = Math.hypot(dx, dy)
-      if (off > room) T = [G[0] + (dx / off) * room, G[1] + (dy / off) * room]
-      q = clampDisk([T[0] / zt, T[1] / zt], qmax)
-      // whatever the plane cannot carry is a plain shift on screen
-      const rest = [T[0] - q[0] * zt, T[1] - q[1] * zt]
+      return { g, G: [g[0] * zoom, g[1] * zoom], cut: TREE.cut * zoom * (1 - (g[0] ** 2 + g[1] ** 2)) }
+    }
+    // the farther the Tree's trunk lies out in its own plane, the smaller it is drawn; it may go
+    // only so far that its top still covers the cut with room to spare
+    const qLimit = (cut, zt) => Math.sqrt(1 - Math.min(0.97, (cut * 1.2) / (TREE.top * zt)))
+    // a placing moved so the screen position of the trunk goes by d, the plane carrying what it can
+    const slideBy = (st, d, zt, qmax) => {
+      const T = [st.q[0] * zt + st.rest[0] + d[0], st.q[1] * zt + st.rest[1] + d[1]]
+      const q = clampDisk([st.q[0] + d[0] / zt, st.q[1] + d[1] / zt], qmax)
+      return { q, rest: [T[0] - q[0] * zt, T[1] - q[1] * zt] }
+    }
+    // keep the Tree over its trunk: never farther from the cut than its top allows
+    const fit = (st, v) => {
+      const zt = TREE.k * zoom
+      const { G, cut } = groundTrunk(v)
+      const qmax = qLimit(cut, zt)
+      let cur = slideBy(st, [0, 0], zt, qmax)
+      for (let k = 0; k < 6; k++) {
+        const T = [cur.q[0] * zt + cur.rest[0], cur.q[1] * zt + cur.rest[1]]
+        const top = TREE.top * zt * (1 - (cur.q[0] ** 2 + cur.q[1] ** 2))
+        const room = Math.max(0, top - cut) * 0.85
+        const dx = T[0] - G[0]
+        const dy = T[1] - G[1]
+        const l = Math.hypot(dx, dy)
+        if (l <= room + 1e-12) break
+        // pulled back by a plain shift on screen, so the Tree is not bent by it
+        cur = { q: cur.q, rest: [cur.rest[0] + G[0] + (dx / l) * room - T[0], cur.rest[1] + G[1] + (dy / l) * room - T[1]] }
+      }
+      return cur
+    }
+    // the placing after the land is panned from the present view to v: the Tree runs ahead
+    const panned = (v, st = treeSt) => {
+      const zt = TREE.k * zoom
+      const a = groundTrunk(view)
+      const b = groundTrunk(v)
+      const d = [(b.G[0] - a.G[0]) * TREE.lift, (b.G[1] - a.G[1]) * TREE.lift]
+      return slideBy(st, d, zt, qLimit(b.cut, zt))
+    }
+    const placedOver = (v) => {
+      // the Tree straight over its trunk
+      const zt = TREE.k * zoom
+      const { G, cut } = groundTrunk(v)
+      const q = clampDisk([G[0] / zt, G[1] / zt], qLimit(cut, zt))
+      return { q, rest: [G[0] - q[0] * zt, G[1] - q[1] * zt] }
+    }
+    const treeView = (v = view, twist = treeTwist, st = treeSt) => {
+      const zt = TREE.k * zoom
+      const { G, cut } = groundTrunk(v)
+      const f = fit(st, v)
+      const q = f.q
+      const T = [q[0] * zt + f.rest[0], q[1] * zt + f.rest[1]]
       // the ground's turn at its trunk: z -> view(z) has the argument -2 arg(a) at the origin
       const phi = -2 * Math.atan2(v.a[1], v.a[0]) + twist
       const turn = { a: [Math.cos(phi / 2), Math.sin(phi / 2)], b: [0, 0] }
-      return { view: compose(shift(q), turn), zoom: zt, G, T, top: TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2)), cut, rest, phi }
+      return { view: compose(shift(q), turn), zoom: zt, G, T, top: TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2)), cut, rest: f.rest, phi, st: f }
     }
     const treeUniforms = (prog) => {
       const t = treeView()
@@ -610,16 +646,20 @@ void main(){
 
     // for checking the map by script: look at disk point (x, y) at a given zoom, drawn at once
     // for checking by script: where the trunk and the Tree's top lie on screen for a view
-    host.__ddTree = (x, y, z) => {
+    host.__ddTree = (x, y, z, off = [0, 0]) => {
       view = carry([x, y], [0, 0])
       zoom = Math.min(ZOOM.max, Math.max(ZOOM.min, z))
-      const t = treeView()
+      // a placing slid by off (ground disk units) from straight over the trunk
+      const zt = TREE.k * zoom
+      const base = placedOver(view)
+      const t = treeView(view, treeTwist, slideBy(base, [off[0] * zoom, off[1] * zoom], zt, 0.999))
       const tz = apply(t.view, [0, 0])
       return { G: t.G, T: [tz[0] * t.zoom + t.rest[0], tz[1] * t.zoom + t.rest[1]], top: t.top, cut: t.cut }
     }
     host.__ddLook = (x, y, z) => {
       view = carry([x, y], [0, 0])
       zoom = Math.min(ZOOM.max, Math.max(ZOOM.min, z))
+      treeSt = placedOver(view)
       draw()
     }
 
@@ -841,7 +881,7 @@ void main(){
     }
     // the view centre may not go farther than REACH from the Tree; at the limit it slides along
     const R_REACH = Math.tanh(REACH / 2)
-    const move = (mv) => {
+    const move = (mv, pan = true) => {
       let next = compose(mv, view)
       const c = apply(inverse(next), [0, 0])
       const l = Math.hypot(c[0], c[1])
@@ -849,7 +889,10 @@ void main(){
       const moved =
         Math.hypot(next.b[0] - view.b[0], next.b[1] - view.b[1]) +
         Math.hypot(next.a[0] - view.a[0], next.a[1] - view.a[1])
+      // panning slides the Tree ahead of the land (kept within reach of its trunk); zooming does not
+      if (pan) treeSt = panned(next)
       view = next
+      treeSt = fit(treeSt, view)
       redraw()
       return moved > 1e-7
     }
@@ -858,8 +901,13 @@ void main(){
       const z0 = toDisk(x, y)
       const nz = Math.min(ZOOM.max, Math.max(ZOOM.min, zoom * factor))
       if (nz === zoom) return
+      // the Tree is scaled about the same point as the land, as one picture with it
+      const [cx, cy, h] = half()
+      const P = [(x - cx) / h, (y - cy) / h]
+      const sc = nz / zoom
+      treeSt = { q: treeSt.q, rest: [sc * treeSt.rest[0] + (1 - sc) * P[0], sc * treeSt.rest[1] + (1 - sc) * P[1]] }
       zoom = nz
-      move(carry(z0, toDisk(x, y)))
+      move(carry(z0, toDisk(x, y)), false)
       redraw()
     }
 
@@ -935,7 +983,7 @@ void main(){
       return apply(inverse(t.view), clampDisk([((x - cx) / h - t.rest[0]) / t.zoom, ((y - cy) / h - t.rest[1]) / t.zoom]))
     }
     const treeOnScreen = (w, v, twist) => {
-      const t = treeView(v, twist)
+      const t = treeView(v, twist, panned(v))
       const [cx, cy, h] = half()
       const p = apply(t.view, w)
       return [cx + (p[0] * t.zoom + t.rest[0]) * h, cy + (p[1] * t.zoom + t.rest[1]) * h]
@@ -975,6 +1023,12 @@ void main(){
     // for checking by script: the Tree's point under a screen point, and where a Tree point is on screen
     host.__ddTreeAt = (x, y) => treeAt(x, y)
     host.__ddTreeScreen = (w) => treeOnScreen(w, view, treeTwist)
+    host.__ddGroundAt = (x, y) => apply(inverse(view), toDisk(x, y))
+    host.__ddGroundScreen = (w) => {
+      const [cx, cy, h] = half()
+      const p = apply(view, w)
+      return [cx + p[0] * zoom * h, cy + p[1] * zoom * h]
+    }
     const pointers = new Map()
     let pinch = null
     let vel = [0, 0]
