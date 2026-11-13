@@ -370,6 +370,7 @@ void main(){
     let treeSprites = null
     let treeTex = null
     let regions = []
+    let lands = [] // the biomes' lands: not drawn, only named in the tip under a realm
     let regionLines = null
     let hovered = null
     let spriteCount = 0
@@ -728,6 +729,16 @@ void main(){
         }
         regionLines = buildLines(list)
       }
+      lands = (world.lands || []).map((r) => {
+        const rings = r.rings.map((flat) => {
+          const pts = []
+          for (let i = 0; i < flat.length; i += 2) pts.push([flat[i], flat[i + 1]])
+          return pts
+        })
+        let box = [1, 1, -1, -1]
+        for (const ring of rings) for (const [x, y] of ring) box = [Math.min(box[0], x), Math.min(box[1], y), Math.max(box[2], x), Math.max(box[3], y)]
+        return { name: r.name, kind: r.kind, rings, box }
+      })
       if (world.tree && world.tree.fill) {
         const f = new Float32Array(world.tree.fill)
         const buf = gl.createBuffer()
@@ -827,6 +838,10 @@ void main(){
       // with the Tree shown, its regions lie on top of the land's
       return treeOn ? [...hit.filter((r) => r.set === "tree"), ...hit.filter((r) => r.set !== "tree")] : hit
     }
+    const landAt = (cx, cy) => {
+      const [x, y] = apply(inverse(view), toDisk(cx, cy))
+      return lands.find((r) => x >= r.box[0] && x <= r.box[2] && y >= r.box[1] && y <= r.box[3] && r.rings.reduce((c, ring) => c !== inside(ring, x, y), false))
+    }
     const hover = (e) => {
       if (pointers.size || e.pointerType === "touch") return
       const r = canvas.getBoundingClientRect()
@@ -840,12 +855,11 @@ void main(){
         tip.style.opacity = 0
         return
       }
+      // the realm and its people; below it, the land under the pointer
+      const land = top.set === "ground" ? landAt(e.clientX, e.clientY) : null
       tip.innerHTML =
         `<b>${top.name}</b><span>${top.kind}</span>` +
-        found
-          .slice(1, 3)
-          .map((x) => `<i>${x.name}</i>`)
-          .join("")
+        (land ? `<i>${land.name} · ${land.kind}</i>` : "")
       tip.style.left = `${e.clientX - r.left + 14}px`
       tip.style.top = `${e.clientY - r.top + 14}px`
       tip.style.opacity = 1
