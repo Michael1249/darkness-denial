@@ -419,9 +419,10 @@ void main(){
     // is found on screen, the Tree's is set a little farther out from the screen's centre
     // (parallax, TREE.lift), but never so far that the Tree's top would uncover the cut; the
     // Tree is turned as the ground is turned there, at its own faster zoom
-    const treeView = () => {
+    let treeTwist = 0 // the Tree's own turn on top of the ground's, kept while the Tree is dragged
+    const treeView = (v = view, twist = treeTwist) => {
       const zt = Math.min(TREE.max, TREE.a * zoom ** TREE.p)
-      const g = apply(view, [0, 0]) // the ground's trunk, in the view's disk
+      const g = apply(v, [0, 0]) // the ground's trunk, in the view's disk
       const G = [g[0] * zoom, g[1] * zoom] // on screen, in units of half the smaller side
       const cut = TREE.cut * zoom * (1 - (g[0] ** 2 + g[1] ** 2))
       // the farther the Tree's trunk lies out in its own plane, the smaller it is drawn; it may
@@ -440,9 +441,9 @@ void main(){
       // whatever the plane cannot carry is a plain shift on screen
       const rest = [T[0] - q[0] * zt, T[1] - q[1] * zt]
       // the ground's turn at its trunk: z -> view(z) has the argument -2 arg(a) at the origin
-      const phi = -2 * Math.atan2(view.a[1], view.a[0])
+      const phi = -2 * Math.atan2(v.a[1], v.a[0]) + twist
       const turn = { a: [Math.cos(phi / 2), Math.sin(phi / 2)], b: [0, 0] }
-      return { view: compose(shift(q), turn), zoom: zt, G, T, top: TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2)), cut, rest }
+      return { view: compose(shift(q), turn), zoom: zt, G, T, top: TREE.top * zt * (1 - (q[0] ** 2 + q[1] ** 2)), cut, rest, phi }
     }
     const treeUniforms = (prog) => {
       const t = treeView()
@@ -922,6 +923,58 @@ void main(){
       redraw()
     })
 
+    // with the Tree shown, dragging takes hold of the Tree: the point of it under the hand stays
+    // under the hand, the land beneath is moved to suit, and the Tree keeps its own bearing
+    const half = () => {
+      const r = canvas.getBoundingClientRect()
+      return [r.left + r.width / 2, r.top + r.height / 2, Math.min(r.width, r.height) / 2]
+    }
+    const treeAt = (x, y, v = view, twist = treeTwist) => {
+      const t = treeView(v, twist)
+      const [cx, cy, h] = half()
+      return apply(inverse(t.view), clampDisk([((x - cx) / h - t.rest[0]) / t.zoom, ((y - cy) / h - t.rest[1]) / t.zoom]))
+    }
+    const treeOnScreen = (w, v, twist) => {
+      const t = treeView(v, twist)
+      const [cx, cy, h] = half()
+      const p = apply(t.view, w)
+      return [cx + (p[0] * t.zoom + t.rest[0]) * h, cy + (p[1] * t.zoom + t.rest[1]) * h]
+    }
+    // the land shifted so its point at the screen's centre goes d pixels along
+    const shifted = (v, d) => {
+      const [cx, cy] = half()
+      return compose(carry(toDisk(cx, cy), toDisk(cx + d[0], cy + d[1])), v)
+    }
+    const twistFor = (v, phi) => phi + 2 * Math.atan2(v.a[1], v.a[0])
+    const dragTree = (from, to) => {
+      const w = treeAt(...from)
+      const phi = treeView().phi
+      let v = view
+      for (let it = 0; it < 4; it++) {
+        const s = treeOnScreen(w, v, twistFor(v, phi))
+        const e = [to[0] - s[0], to[1] - s[1]]
+        if (Math.hypot(e[0], e[1]) < 0.2) break
+        // how the Tree's point answers a small shift of the land (Newton's step)
+        const hgt = 2
+        const vx = shifted(v, [hgt, 0])
+        const vy = shifted(v, [0, hgt])
+        const sx = treeOnScreen(w, vx, twistFor(vx, phi))
+        const sy = treeOnScreen(w, vy, twistFor(vy, phi))
+        const j = [(sx[0] - s[0]) / hgt, (sy[0] - s[0]) / hgt, (sx[1] - s[1]) / hgt, (sy[1] - s[1]) / hgt]
+        const det = j[0] * j[3] - j[1] * j[2]
+        if (Math.abs(det) < 1e-9) break
+        const d = [(j[3] * e[0] - j[1] * e[1]) / det, (-j[2] * e[0] + j[0] * e[1]) / det]
+        const l = Math.hypot(d[0], d[1])
+        const cap = 400
+        v = shifted(v, l > cap ? [(d[0] / l) * cap, (d[1] / l) * cap] : d)
+      }
+      const moved = move(compose(v, inverse(view)))
+      treeTwist = twistFor(view, phi)
+      return moved
+    }
+    // for checking by script: the Tree's point under a screen point, and where a Tree point is on screen
+    host.__ddTreeAt = (x, y) => treeAt(x, y)
+    host.__ddTreeScreen = (w) => treeOnScreen(w, view, treeTwist)
     const pointers = new Map()
     let pinch = null
     let vel = [0, 0]
@@ -947,13 +1000,18 @@ void main(){
       if (!prev) return
       const cur = [e.clientX, e.clientY]
       if (pointers.size === 1) {
-        const p = toDisk(...prev)
-        const q = toDisk(...cur)
         const now = performance.now()
         const dt = Math.max(1, now - last)
-        vel = [((q[0] - p[0]) / dt) * 16, ((q[1] - p[1]) / dt) * 16]
         last = now
-        move(carry(p, q))
+        if (treeOn && treeLines) {
+          vel = [((cur[0] - prev[0]) / dt) * 16, ((cur[1] - prev[1]) / dt) * 16]
+          dragTree(prev, cur)
+        } else {
+          const p = toDisk(...prev)
+          const q = toDisk(...cur)
+          vel = [((q[0] - p[0]) / dt) * 16, ((q[1] - p[1]) / dt) * 16]
+          move(carry(p, q))
+        }
       }
       pointers.set(e.pointerId, cur)
       if (pointers.size === 2 && pinch) {
@@ -970,6 +1028,20 @@ void main(){
       if (pointers.size) return
       canvas.classList.remove("dd-grabbing")
       if (performance.now() - last > 80) return
+      if (treeOn && treeLines) {
+        // the Tree coasts too, in screen pixels
+        let v = vel
+        const l = Math.hypot(v[0], v[1])
+        if (l > 60) v = [(v[0] / l) * 60, (v[1] / l) * 60]
+        const step = () => {
+          v = [v[0] * 0.9, v[1] * 0.9]
+          const [cx, cy] = half()
+          if (Math.hypot(v[0], v[1]) < 0.3 || !dragTree([cx, cy], [cx + v[0], cy + v[1]])) return
+          glide = requestAnimationFrame(step)
+        }
+        glide = requestAnimationFrame(step)
+        return
+      }
       // coast and slow down; the speed is capped so a flick cannot throw the map far
       let v = vel
       const l = Math.hypot(v[0], v[1])
