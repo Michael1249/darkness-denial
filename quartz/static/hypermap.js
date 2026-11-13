@@ -14,6 +14,10 @@
 
   const ZOOM = { start: 3.4, min: 1.15, max: 17 } // window radius in the disk is 1 / zoom
   const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
+  // the Great Tree is a layer nearer to the eye: its zoom grows faster than the ground's
+  // (TREE.a * zoom ^ TREE.p), so it is small from afar and opens up close by, and it slides
+  // over the land faster as you pan: parallax
+  const TREE = { a: 0.38, p: 1.7, max: 40 }
   const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
   const BANK = [0.29, 0.208, 0.125]
@@ -120,7 +124,7 @@ void main(){
     // a limb of the Tree: inked bark edges, solid paper wood, grain along the limb
     float edge = 1. - smoothstep(1.2, 2.2, fromEdge);
     float grain = step(.8, fract(vDist / .035 + abs(vSide) * 2.)) * (1. - smoothstep(.0, .9, abs(abs(vSide) - .45))) * .5;
-    vec3 wood = vec3(.894, .784, .565);
+    vec3 wood = vec3(.66, .53, .37);
     vec3 col = mix(wood, ink, max(edge, grain));
     float a2 = vAlpha * clamp(fromEdge, 0., 1.);
     gl_FragColor = vec4(col * a2, a2);
@@ -213,20 +217,45 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
   // the land: a triangle mesh coloured by biome, mottled like old paper
   const LAND_V = `${COMMON}
 attribute vec2 p; attribute vec3 col;
+uniform vec2 offs;   // a screen offset, for the canopy's shadow on the ground
 varying vec3 vC; varying vec2 vW;
 void main(){
   vC = col; vW = p * 2. / (1. - dot(p, p));   // roughly hyperbolic units, so the mottling keeps its size
-  gl_Position = clip(px(mob(p)), 0.);
+  gl_Position = clip(px(mob(p)) + offs, 0.);
 }`
   const LAND_F = `
 precision highp float;
 varying vec3 vC; varying vec2 vW;
+uniform float shade;   // above 0: draw only a translucent shadow
+uniform float leafy;   // 1 for the Tree's foliage: tufts of needles over the colour
+vec2 hash2(vec2 p){ return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
+// rounded clumps (cellular noise): light on each clump's north-west side, dark gaps between
+float clumps(vec2 q){
+  vec2 i = floor(q), f = fract(q);
+  float d1 = 9., d2 = 9.; vec2 best = vec2(0.);
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 o = vec2(float(x), float(y));
+    vec2 r = o + hash2(i + o) * .8 + .1 - f;
+    float d = dot(r, r);
+    if (d < d1) { d2 = d1; d1 = d; best = r; } else if (d < d2) d2 = d;
+  }
+  float e = sqrt(d1);
+  float hl = 1. - smoothstep(0., .42, length(best - vec2(.16, .16)));   // the lit side of a tuft
+  float gap = 1. - smoothstep(.0, .3, sqrt(d2) - e);
+  return .82 + .3 * hl - .16 * smoothstep(.25, .6, e) - .12 * gap;
+}
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
   return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
 void main(){
+  if (shade > 0.) { gl_FragColor = vec4(vec3(.17, .12, .06) * shade, shade); return; }
   float m = noise(vW * 3.) * .55 + noise(vW * 11.) * .3 + noise(gl_FragCoord.xy / 3.) * .15;
-  gl_FragColor = vec4(vC * (.9 + .14 * m), 1.);
+  vec3 c = vC * (.9 + .14 * m);
+  if (leafy > .5) {
+    // clumps of needles at two scales
+    c *= .9 + .1 * clumps(vW * 40.);   // only a hint of tufts, in keeping with the map
+  }
+  gl_FragColor = vec4(c, 1.);
 }`
 
   const data = Promise.all([
@@ -255,6 +284,9 @@ void main(){
       img.src = base + "places.png"
     }),
     fetch(base + "land.bin")
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .catch(() => null),
+    fetch(base + "canopy.bin")
       .then((r) => (r.ok ? r.arrayBuffer() : null))
       .catch(() => null),
   ])
@@ -293,6 +325,7 @@ void main(){
     let landMesh = null
     let riverLines = null
     let placeSprites = null
+    let canopyMesh = null
     let placesTex = null
     let treeFill = null
     let treeOn = false
@@ -320,6 +353,7 @@ void main(){
     let lineCount = 0
     let spriteBuf = null
     let treeLines = null
+    let treeBranches = null
     let treeSprites = null
     let treeTex = null
     let regions = []
@@ -356,6 +390,32 @@ void main(){
         zoom,
         Math.min(canvas.width, canvas.height) / 2,
       )
+    }
+    // the Tree's own view: centred on the point of its plane over the ground's centre, pushed
+    // out further (parallax), turned as the ground is turned, at its own faster zoom
+    const treeView = () => {
+      const c = apply(inverse(view), [0, 0])
+      const r = Math.hypot(c[0], c[1])
+      const s = 1 / (TREE.a * ZOOM.min ** (TREE.p - 1))
+      let ct = [0, 0]
+      if (r > 1e-9) {
+        const k = Math.tanh(Math.atanh(Math.min(r, 0.999999)) * s) / r
+        ct = [c[0] * k, c[1] * k]
+      }
+      const turn = compose(view, shift(c))
+      return { view: compose(turn, shift([-ct[0], -ct[1]])), zoom: Math.min(TREE.max, TREE.a * zoom ** TREE.p) }
+    }
+    const treeUniforms = (prog) => {
+      const t = treeView()
+      gl.uniform4f(gl.getUniformLocation(prog, "m"), t.view.a[0], t.view.a[1], t.view.b[0], t.view.b[1])
+      gl.uniform4f(
+        gl.getUniformLocation(prog, "screen"),
+        canvas.width,
+        canvas.height,
+        t.zoom,
+        Math.min(canvas.width, canvas.height) / 2,
+      )
+      return t
     }
     const draw = () => {
       queued = false
@@ -394,6 +454,9 @@ void main(){
         gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE)
         gl.useProgram(landProg)
         uniforms(landProg)
+        gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 0, 0)
+        gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0)
+        gl.uniform1f(gl.getUniformLocation(landProg, "leafy"), 0)
         bind(landProg, landMesh.buf, [["p", 2], ["col", 3]])
         gl.drawArrays(gl.TRIANGLES, 0, landMesh.count)
         gl.disable(gl.STENCIL_TEST)
@@ -429,49 +492,69 @@ void main(){
         bind(sprites, placeSprites.buf, SPRITE_LAYOUT)
         gl.drawArrays(gl.TRIANGLES, 0, placeSprites.count)
       }
-      if (treeOn && treeLines) {
-        // the Great Tree's own map, laid over Morra: leaf land, its lines, then its glyphs
-        gl.disable(gl.DEPTH_TEST)
-        if (treeFill) {
-          gl.useProgram(fillProg)
-          uniforms(fillProg)
-          gl.uniform3f(gl.getUniformLocation(fillProg, "colour"), 0.86, 0.8, 0.6)
-          bind(fillProg, treeFill.buf, [["p", 2]])
-          gl.drawArrays(gl.TRIANGLES, 0, treeFill.count)
-        }
-        gl.useProgram(lines)
-        uniforms(lines)
-        bind(lines, treeLines.buf, LINE_LAYOUT)
-        gl.drawArrays(gl.TRIANGLES, 0, treeLines.count)
-        gl.useProgram(sprites)
-        uniforms(sprites)
-        gl.bindTexture(gl.TEXTURE_2D, treeTex)
-        bind(sprites, treeSprites.buf, SPRITE_LAYOUT)
-        gl.drawArrays(gl.TRIANGLES, 0, treeSprites.count)
+      const drawLabels = (buf, count, tree) => {
+        if (!labelTex || !count) return
+        gl.useProgram(labelProg)
+        if (tree) treeUniforms(labelProg)
+        else uniforms(labelProg)
+        gl.uniform1f(gl.getUniformLocation(labelProg, "dpr"), devicePixelRatio)
+        gl.bindTexture(gl.TEXTURE_2D, labelTex)
+        bind(labelProg, buf, LABEL_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, count)
       }
-      if (hovered && regionLines) {
-        gl.disable(gl.DEPTH_TEST)
+      gl.disable(gl.DEPTH_TEST)
+      // the ground's names lie on the ground, under the Tree
+      drawLabels(labelBuf, labelCount, false)
+      drawLabels(underLabelBuf, underLabelCount, false)
+      if (hovered && regionLines && hovered.set !== "tree") {
         gl.useProgram(lines)
         uniforms(lines)
         bind(lines, regionLines.buf, LINE_LAYOUT)
         gl.drawArrays(gl.TRIANGLES, hovered.first, hovered.count)
       }
-      if (labelTex && labelCount) {
-        gl.disable(gl.DEPTH_TEST)
-        gl.useProgram(labelProg)
-        uniforms(labelProg)
-        gl.uniform1f(gl.getUniformLocation(labelProg, "dpr"), devicePixelRatio)
-        gl.bindTexture(gl.TEXTURE_2D, labelTex)
-        bind(labelProg, labelBuf, LABEL_LAYOUT)
-        gl.drawArrays(gl.TRIANGLES, 0, labelCount)
-        if (treeOn && treeLabelCount) {
-          bind(labelProg, treeLabelBuf, LABEL_LAYOUT)
-          gl.drawArrays(gl.TRIANGLES, 0, treeLabelCount)
+      if (treeOn && treeLines) {
+        // the Great Tree's own map, nearer the eye: the clouds' shadow on the ground, its
+        // boughs, the clouds of leaves, their lines, then its glyphs and names
+        const t = treeView()
+        const lift = Math.min(3, t.zoom / zoom)
+        if (canopyMesh) {
+          gl.useProgram(landProg)
+          treeUniforms(landProg)
+          gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 9 * lift * devicePixelRatio, 12 * lift * devicePixelRatio)
+          gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0.28)
+          bind(landProg, canopyMesh.buf, [["p", 2], ["col", 3]])
+          gl.drawArrays(gl.TRIANGLES, 0, canopyMesh.count)
         }
-        if (!treeOn && underLabelCount) {
-          bind(labelProg, underLabelBuf, LABEL_LAYOUT)
-          gl.drawArrays(gl.TRIANGLES, 0, underLabelCount)
+        gl.useProgram(lines)
+        treeUniforms(lines)
+        gl.uniform1f(gl.getUniformLocation(lines, "pass"), -1)
+        bind(lines, treeBranches.buf, LINE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, treeBranches.count)
+        if (canopyMesh) {
+          gl.useProgram(landProg)
+          treeUniforms(landProg)
+          gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 0, 0)
+          gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0)
+          gl.uniform1f(gl.getUniformLocation(landProg, "leafy"), 1)
+          bind(landProg, canopyMesh.buf, [["p", 2], ["col", 3]])
+          gl.drawArrays(gl.TRIANGLES, 0, canopyMesh.count)
         }
+        gl.useProgram(lines)
+        treeUniforms(lines)
+        bind(lines, treeLines.buf, LINE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, treeLines.count)
+        gl.useProgram(sprites)
+        treeUniforms(sprites)
+        gl.bindTexture(gl.TEXTURE_2D, treeTex)
+        bind(sprites, treeSprites.buf, SPRITE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, treeSprites.count)
+        if (hovered && regionLines && hovered.set === "tree") {
+          gl.useProgram(lines)
+          treeUniforms(lines)
+          bind(lines, regionLines.buf, LINE_LAYOUT)
+          gl.drawArrays(gl.TRIANGLES, hovered.first, hovered.count)
+        }
+        drawLabels(treeLabelBuf, treeLabelCount, true)
       }
     }
     const redraw = () => {
@@ -500,7 +583,7 @@ void main(){
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       return tex
     }
-    data.then(([world, img, labelImg, treeImg, placesImg, landBin]) => {
+    data.then(([world, img, labelImg, treeImg, placesImg, landBin, canopyBin]) => {
       limits = [world.limits.coast, world.limits.ocean, world.limits.ice]
       const CORNERS = [
         [0, -1],
@@ -568,8 +651,25 @@ void main(){
       }
       ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines.filter((l) => l.k !== "river")))
       riverLines = buildLines(world.lines.filter((l) => l.k === "river"))
+      // coloured meshes: uint32 vertices, uint32 triangles, float32 xy, uint8 rgb, uint32 indices
+      const readMesh = (bin) => {
+        const [nv, nt] = new Uint32Array(bin, 0, 2)
+        const xy = new Float32Array(bin, 8, nv * 2)
+        const rgb = new Uint8Array(bin, 8 + nv * 8, nv * 3)
+        const off = 8 + nv * 11
+        const idx = new Uint32Array(bin.slice(off, off + nt * 12))
+        const out = new Float32Array(nt * 3 * 5)
+        for (let i = 0; i < nt * 3; i++) {
+          const v = idx[i]
+          out.set([xy[v * 2], xy[v * 2 + 1], rgb[v * 3] / 255, rgb[v * 3 + 1] / 255, rgb[v * 3 + 2] / 255], i * 5)
+        }
+        const buf = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+        gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW)
+        return { buf, count: nt * 3 }
+      }
+      if (canopyBin) canopyMesh = readMesh(canopyBin)
       if (landBin) {
-        // uint32 vertices, uint32 triangles, float32 xy, uint8 rgb, uint32 indices
         const head = new Uint32Array(landBin, 0, 2)
         const [nv, nt] = head
         const xy = new Float32Array(landBin, 8, nv * 2)
@@ -643,7 +743,8 @@ void main(){
         treeFill = { buf, count: f.length / 2 }
       }
       if (world.tree) {
-        treeLines = buildLines(world.tree.lines)
+        treeBranches = buildLines(world.tree.lines.filter((l) => l.k === "branch"))
+        treeLines = buildLines(world.tree.lines.filter((l) => l.k !== "branch"))
         treeSprites = buildSprites(world.tree.sprites, world.tree.atlas || world.atlas)
       }
 
@@ -680,10 +781,10 @@ void main(){
     redraw()
 
     // ---- interaction
-    const toDisk = (x, y) => {
+    const toDisk = (x, y, z = zoom) => {
       const r = canvas.getBoundingClientRect()
       const s = Math.min(r.width, r.height) / 2
-      return clampDisk([(x - r.left - r.width / 2) / s / zoom, (y - r.top - r.height / 2) / s / zoom])
+      return clampDisk([(x - r.left - r.width / 2) / s / z, (y - r.top - r.height / 2) / s / z])
     }
     // the view centre may not go farther than REACH from the Tree; at the limit it slides along
     const R_REACH = Math.tanh(REACH / 2)
@@ -725,10 +826,14 @@ void main(){
     }
     const regionsAt = (cx, cy) => {
       const w = apply(inverse(view), toDisk(cx, cy))
+      const t = treeView()
+      const wt = apply(inverse(t.view), toDisk(cx, cy, t.zoom))
       const hit = regions
         .filter((r) => r.set === "ground" || treeOn)
-        .filter((r) => w[0] >= r.box[0] && w[0] <= r.box[2] && w[1] >= r.box[1] && w[1] <= r.box[3])
-        .filter((r) => r.rings.some((ring) => inside(ring, w[0], w[1])))
+        .filter((r) => {
+          const [x, y] = r.set === "tree" ? wt : w
+          return x >= r.box[0] && x <= r.box[2] && y >= r.box[1] && y <= r.box[3] && r.rings.some((ring) => inside(ring, x, y))
+        })
         .sort((a, b) => a.area - b.area)
       // with the Tree shown, its regions lie on top of the land's
       return treeOn ? [...hit.filter((r) => r.set === "tree"), ...hit.filter((r) => r.set !== "tree")] : hit
