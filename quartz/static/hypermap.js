@@ -14,7 +14,7 @@
 
   const ZOOM = { start: 3.4, min: 1.15, max: 17 } // window radius in the disk is 1 / zoom
   const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
-  const INK = [0.169, 0.125, 0.086]
+  const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
   const BANK = [0.29, 0.208, 0.125]
   const WATER = [0.925, 0.863, 0.706]
@@ -115,19 +115,12 @@ void main(){
     gl_FragColor = vec4(rc * a, a);
     return;
   }
-  if (vRed > 6.5) {
-    // the sea-side glow along a shore: soft teal, fading away from the land
-    float g = vAlpha * pow(1. - abs(vSide), 1.6);
-    vec3 teal = vec3(.561, .757, .702);
-    gl_FragColor = vec4(teal * g, g);
-    return;
-  }
   vec3 c = (vRed > .5 && vRed < 1.5) || (vRed > 3.5 && vRed < 4.5) || vRed > 5.5 ? red : ink;
   if (vRed > 4.5 && vRed < 5.5) {
     // a limb of the Tree: inked bark edges, solid paper wood, grain along the limb
     float edge = 1. - smoothstep(1.2, 2.2, fromEdge);
     float grain = step(.8, fract(vDist / .035 + abs(vSide) * 2.)) * (1. - smoothstep(.0, .9, abs(abs(vSide) - .45))) * .5;
-    vec3 wood = vec3(.93, .87, .74);
+    vec3 wood = vec3(.894, .784, .565);
     vec3 col = mix(wood, ink, max(edge, grain));
     float a2 = vAlpha * clamp(fromEdge, 0., 1.);
     gl_FragColor = vec4(col * a2, a2);
@@ -279,7 +272,6 @@ void main(){
     const fillProg = program(FILL_V, FILL_F)
     const landProg = program(LAND_V, LAND_F)
     let landMesh = null
-    let glowLines = null
     let riverLines = null
     let treeFill = null
     let treeOn = false
@@ -372,10 +364,6 @@ void main(){
       gl.uniform3f(gl.getUniformLocation(lines, "water"), ...WATER)
       const pass = gl.getUniformLocation(lines, "pass")
       gl.uniform1f(pass, -1)
-      if (glowLines) {
-        bind(lines, glowLines.buf, LINE_LAYOUT)
-        gl.drawArrays(gl.TRIANGLES, 0, glowLines.count)
-      }
       if (landMesh) {
         // the land marks the stencil, so river banks stop at the shore and only water runs on
         gl.clearStencil(0)
@@ -420,7 +408,7 @@ void main(){
         if (treeFill) {
           gl.useProgram(fillProg)
           uniforms(fillProg)
-          gl.uniform3f(gl.getUniformLocation(fillProg, "colour"), 0.925, 0.9, 0.78)
+          gl.uniform3f(gl.getUniformLocation(fillProg, "colour"), 0.86, 0.8, 0.6)
           bind(fillProg, treeFill.buf, [["p", 2]])
           gl.drawArrays(gl.TRIANGLES, 0, treeFill.count)
         }
@@ -503,7 +491,7 @@ void main(){
         [1, 0],
         [1, 1],
       ]
-      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6, glow: 7 }
+      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6 }
       // lines: six vertices per segment, with the run of hyperbolic length for dashes
       const buildLines = (list) => {
         let segs = 0
@@ -553,11 +541,6 @@ void main(){
       }
       ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines.filter((l) => l.k !== "river")))
       riverLines = buildLines(world.lines.filter((l) => l.k === "river"))
-      glowLines = buildLines(
-        world.lines
-          .filter((l) => l.k === "coast" || l.k === "isle")
-          .map((l) => ({ ...l, k: "glow", w: l.k === "coast" ? 0.045 : 0.03, a: 0.45 })),
-      )
       if (landBin) {
         // uint32 vertices, uint32 triangles, float32 xy, uint8 rgb, uint32 indices
         const head = new Uint32Array(landBin, 0, 2)
