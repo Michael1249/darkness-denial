@@ -16,6 +16,8 @@
   const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
   const INK = [0.169, 0.125, 0.086]
   const RED = [0.608, 0.227, 0.141]
+  const BANK = [0.29, 0.208, 0.125]
+  const WATER = [0.925, 0.863, 0.706]
 
   // ---- complex numbers and disk automorphisms z -> (a z + b) / (conj(b) z + conj(a))
   const mul = (p, q) => [p[0] * q[0] - p[1] * q[1], p[0] * q[1] + p[1] * q[0]]
@@ -62,7 +64,7 @@ float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
 void main(){
   vec2 p = vec2(gl_FragCoord.x, screen.y - gl_FragCoord.y);
   vec2 z = (p - screen.xy * .5) / (screen.z * screen.w);
-  vec3 paper = vec3(.937, .886, .749);
+  vec3 paper = vec3(.925, .863, .706);   // the sea: pale parchment, the colour of every water
   vec3 unknown = vec3(.965, .945, .9);
   float grain = noise(p / 90.) * .6 + noise(p / 23.) * .3 + noise(p / 5.) * .1;
   vec3 c = paper * (.94 + .08 * grain);
@@ -81,6 +83,7 @@ void main(){
   const LINE_V = `${COMMON}
 attribute vec2 p; attribute vec2 q; attribute vec2 corner; attribute vec3 style; attribute vec2 along;
 varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong; varying float vDist;
+uniform float pass;  // rivers: 0 the banks, 1 the water within them; -1 every other line
 void main(){
   vec2 P = mob(p), Q = mob(q);
   vec2 X = corner.x < .5 ? P : Q;
@@ -91,6 +94,8 @@ void main(){
   bool river = (style.z > 1.5 && style.z < 2.5) || (style.z > 4.5 && style.z < 5.5);
   float least = river ? 2.2 : .7;          // rivers stay visible from afar
   float shown = max(wpx, least);
+  if (pass > .5) shown -= 2. * clamp(shown * .2, .7, 1.6);
+  if (shown < .3) { gl_Position = vec4(2., 2., 2., 1.); return; }
   vAlpha = style.y * (river ? 1. : clamp(wpx / .7, .12, 1.));
   float full = shown + 1.;
   vec2 pos = px(X) + dir * (corner.x * 2. - 1.) * shown * .5 + n * corner.y * full * .5;
@@ -100,10 +105,23 @@ void main(){
   const LINE_F = `
 precision highp float;
 varying float vSide; varying float vWidth; varying float vAlpha; varying float vRed; varying float vAlong; varying float vDist;
-uniform vec3 ink; uniform vec3 red;
+uniform vec3 ink; uniform vec3 red; uniform float pass; uniform vec3 bank; uniform vec3 water;
 void main(){
   float fromEdge = (1. - abs(vSide)) * vWidth * .5;
   float a = vAlpha * clamp(fromEdge, 0., 1.);
+  if (pass > -.5) {
+    // rivers in two passes: dark banks (kept to the land), then water the colour of the sea
+    vec3 rc = pass < .5 ? bank : water;
+    gl_FragColor = vec4(rc * a, a);
+    return;
+  }
+  if (vRed > 6.5) {
+    // the sea-side glow along a shore: soft teal, fading away from the land
+    float g = vAlpha * pow(1. - abs(vSide), 1.6);
+    vec3 teal = vec3(.561, .757, .702);
+    gl_FragColor = vec4(teal * g, g);
+    return;
+  }
   vec3 c = (vRed > .5 && vRed < 1.5) || (vRed > 3.5 && vRed < 4.5) || vRed > 5.5 ? red : ink;
   if (vRed > 4.5 && vRed < 5.5) {
     // a limb of the Tree: inked bark edges, solid paper wood, grain along the limb
@@ -186,6 +204,25 @@ precision highp float;
 uniform vec3 colour;
 void main(){ gl_FragColor = vec4(colour, 1.); }`
 
+  // the land: a triangle mesh coloured by biome, mottled like old paper
+  const LAND_V = `${COMMON}
+attribute vec2 p; attribute vec3 col;
+varying vec3 vC; varying vec2 vW;
+void main(){
+  vC = col; vW = p * 2. / (1. - dot(p, p));   // roughly hyperbolic units, so the mottling keeps its size
+  gl_Position = clip(px(mob(p)), 0.);
+}`
+  const LAND_F = `
+precision highp float;
+varying vec3 vC; varying vec2 vW;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+  return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+void main(){
+  float m = noise(vW * 3.) * .55 + noise(vW * 11.) * .3 + noise(gl_FragCoord.xy / 3.) * .15;
+  gl_FragColor = vec4(vC * (.9 + .14 * m), 1.);
+}`
+
   const data = Promise.all([
     fetch(base + "world.json").then((r) => r.json()),
     new Promise((resolve) => {
@@ -205,6 +242,9 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
       img.onerror = () => resolve(null)
       img.src = base + "tree.png"
     }),
+    fetch(base + "land.bin")
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .catch(() => null),
   ])
 
   function setup(host) {
@@ -212,7 +252,7 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
     host.__ddMap = true
     const canvas = document.createElement("canvas")
     host.appendChild(canvas)
-    const gl = canvas.getContext("webgl", { antialias: true, alpha: false })
+    const gl = canvas.getContext("webgl", { antialias: true, alpha: false, stencil: true })
     if (!gl) {
       host.textContent = "Для карты нужен WebGL."
       return
@@ -237,6 +277,10 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
     const sprites = program(SPRITE_V, SPRITE_F)
     const labelProg = program(LABEL_V, LABEL_F)
     const fillProg = program(FILL_V, FILL_F)
+    const landProg = program(LAND_V, LAND_F)
+    let landMesh = null
+    let glowLines = null
+    let riverLines = null
     let treeFill = null
     let treeOn = false
     try {
@@ -324,8 +368,44 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
       uniforms(lines)
       gl.uniform3f(gl.getUniformLocation(lines, "ink"), ...INK)
       gl.uniform3f(gl.getUniformLocation(lines, "red"), ...RED)
+      gl.uniform3f(gl.getUniformLocation(lines, "bank"), ...BANK)
+      gl.uniform3f(gl.getUniformLocation(lines, "water"), ...WATER)
+      const pass = gl.getUniformLocation(lines, "pass")
+      gl.uniform1f(pass, -1)
+      if (glowLines) {
+        bind(lines, glowLines.buf, LINE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, glowLines.count)
+      }
+      if (landMesh) {
+        // the land marks the stencil, so river banks stop at the shore and only water runs on
+        gl.clearStencil(0)
+        gl.clear(gl.STENCIL_BUFFER_BIT)
+        gl.enable(gl.STENCIL_TEST)
+        gl.stencilFunc(gl.ALWAYS, 1, 0xff)
+        gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE)
+        gl.useProgram(landProg)
+        uniforms(landProg)
+        bind(landProg, landMesh.buf, [["p", 2], ["col", 3]])
+        gl.drawArrays(gl.TRIANGLES, 0, landMesh.count)
+        gl.disable(gl.STENCIL_TEST)
+        gl.useProgram(lines)
+      }
       bind(lines, lineBuf, LINE_LAYOUT)
       gl.drawArrays(gl.TRIANGLES, 0, lineCount)
+      if (riverLines) {
+        bind(lines, riverLines.buf, LINE_LAYOUT)
+        if (landMesh) {
+          gl.enable(gl.STENCIL_TEST)
+          gl.stencilFunc(gl.EQUAL, 1, 0xff)
+          gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP)
+        }
+        gl.uniform1f(pass, 0)
+        gl.drawArrays(gl.TRIANGLES, 0, riverLines.count)
+        gl.disable(gl.STENCIL_TEST)
+        gl.uniform1f(pass, 1)
+        gl.drawArrays(gl.TRIANGLES, 0, riverLines.count)
+        gl.uniform1f(pass, -1)
+      }
       gl.enable(gl.DEPTH_TEST)
       gl.depthFunc(gl.LESS)
       gl.clear(gl.DEPTH_BUFFER_BIT)
@@ -386,6 +466,13 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
       }
     }
 
+    // for checking the map by script: look at disk point (x, y) at a given zoom, drawn at once
+    host.__ddLook = (x, y, z) => {
+      view = carry([x, y], [0, 0])
+      zoom = Math.min(ZOOM.max, Math.max(ZOOM.min, z))
+      draw()
+    }
+
     const texture = (img) => {
       const tex = gl.createTexture()
       gl.bindTexture(gl.TEXTURE_2D, tex)
@@ -398,7 +485,7 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       return tex
     }
-    data.then(([world, img, labelImg, treeImg]) => {
+    data.then(([world, img, labelImg, treeImg, landBin]) => {
       limits = [world.limits.coast, world.limits.ocean, world.limits.ice]
       const CORNERS = [
         [0, -1],
@@ -416,7 +503,7 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
         [1, 0],
         [1, 1],
       ]
-      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6 }
+      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6, glow: 7 }
       // lines: six vertices per segment, with the run of hyperbolic length for dashes
       const buildLines = (list) => {
         let segs = 0
@@ -464,7 +551,31 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
         gl.bufferData(gl.ARRAY_BUFFER, sv.subarray(0, o), gl.STATIC_DRAW)
         return { buf, count: o / 11 }
       }
-      ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines))
+      ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines.filter((l) => l.k !== "river")))
+      riverLines = buildLines(world.lines.filter((l) => l.k === "river"))
+      glowLines = buildLines(
+        world.lines
+          .filter((l) => l.k === "coast" || l.k === "isle")
+          .map((l) => ({ ...l, k: "glow", w: l.k === "coast" ? 0.045 : 0.03, a: 0.45 })),
+      )
+      if (landBin) {
+        // uint32 vertices, uint32 triangles, float32 xy, uint8 rgb, uint32 indices
+        const head = new Uint32Array(landBin, 0, 2)
+        const [nv, nt] = head
+        const xy = new Float32Array(landBin, 8, nv * 2)
+        const rgb = new Uint8Array(landBin, 8 + nv * 8, nv * 3)
+        const off = 8 + nv * 11
+        const idx = new Uint32Array(landBin.slice(off, off + nt * 12))
+        const out = new Float32Array(nt * 3 * 5)
+        for (let i = 0; i < nt * 3; i++) {
+          const v = idx[i]
+          out.set([xy[v * 2], xy[v * 2 + 1], rgb[v * 3] / 255, rgb[v * 3 + 1] / 255, rgb[v * 3 + 2] / 255], i * 5)
+        }
+        const buf = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+        gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW)
+        landMesh = { buf, count: nt * 3 }
+      }
       ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
       const regionSets = []
       for (const [set, src] of [["ground", world.regions], ["tree", world.tree && world.tree.regions]]) {
