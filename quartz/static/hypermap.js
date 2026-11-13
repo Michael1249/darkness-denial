@@ -177,6 +177,15 @@ uniform sampler2D atlas;
 varying vec2 vUv; varying float vA;
 void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
 
+  // the Tree's leaf land: triangles of the canopy, filled
+  const FILL_V = `${COMMON}
+attribute vec2 p;
+void main(){ gl_Position = clip(px(mob(p)), 0.); }`
+  const FILL_F = `
+precision highp float;
+uniform vec3 colour;
+void main(){ gl_FragColor = vec4(colour, 1.); }`
+
   const data = Promise.all([
     fetch(base + "world.json").then((r) => r.json()),
     new Promise((resolve) => {
@@ -227,6 +236,17 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
     const lines = program(LINE_V, LINE_F)
     const sprites = program(SPRITE_V, SPRITE_F)
     const labelProg = program(LABEL_V, LABEL_F)
+    const fillProg = program(FILL_V, FILL_F)
+    let treeFill = null
+    let treeOn = false
+    try {
+      treeOn = localStorage.getItem("dd-map-tree") === "1"
+    } catch {}
+    let treeLabelBuf = null
+    let underLabelBuf = null
+    let underLabelCount = 0
+    let treeLabelCount = 0
+    let treeRegions = []
     const LABEL_LAYOUT = [["c", 2], ["corner", 2], ["uv", 4], ["sizes", 2]]
     let labelBuf = null
     let labelCount = 0
@@ -314,9 +334,16 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       gl.bindTexture(gl.TEXTURE_2D, atlasTex)
       bind(sprites, spriteBuf, SPRITE_LAYOUT)
       gl.drawArrays(gl.TRIANGLES, 0, spriteCount)
-      if (treeLines) {
-        // the Great Tree spreads over the land: limbs, then crowns, then the halls on them
+      if (treeOn && treeLines) {
+        // the Great Tree's own map, laid over Morra: leaf land, its lines, then its glyphs
         gl.disable(gl.DEPTH_TEST)
+        if (treeFill) {
+          gl.useProgram(fillProg)
+          uniforms(fillProg)
+          gl.uniform3f(gl.getUniformLocation(fillProg, "colour"), 0.925, 0.9, 0.78)
+          bind(fillProg, treeFill.buf, [["p", 2]])
+          gl.drawArrays(gl.TRIANGLES, 0, treeFill.count)
+        }
         gl.useProgram(lines)
         uniforms(lines)
         bind(lines, treeLines.buf, LINE_LAYOUT)
@@ -342,6 +369,14 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
         gl.bindTexture(gl.TEXTURE_2D, labelTex)
         bind(labelProg, labelBuf, LABEL_LAYOUT)
         gl.drawArrays(gl.TRIANGLES, 0, labelCount)
+        if (treeOn && treeLabelCount) {
+          bind(labelProg, treeLabelBuf, LABEL_LAYOUT)
+          gl.drawArrays(gl.TRIANGLES, 0, treeLabelCount)
+        }
+        if (!treeOn && underLabelCount) {
+          bind(labelProg, underLabelBuf, LABEL_LAYOUT)
+          gl.drawArrays(gl.TRIANGLES, 0, underLabelCount)
+        }
       }
     }
     const redraw = () => {
@@ -431,9 +466,14 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       }
       ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines))
       ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
-      if (world.regions) {
+      const regionSets = []
+      for (const [set, src] of [["ground", world.regions], ["tree", world.tree && world.tree.regions]]) {
+        if (src) regionSets.push([set, src])
+      }
+      if (regionSets.length) {
         const list = []
-        regions = world.regions.map((r) => {
+        const all = regionSets.flatMap(([set, src]) => src.map((r) => ({ ...r, set })))
+        regions = all.map((r) => {
           const rings = r.rings.map((flat) => {
             const pts = []
             for (let i = 0; i < flat.length; i += 2) pts.push([flat[i], flat[i + 1]])
@@ -454,7 +494,7 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
             list.push({ w: 0.02, a: 0.16, k: "region", pts: flat })
             list.push({ w: 0.0035, a: 0.8, k: "region", pts: flat })
           }
-          return { name: r.name, kind: r.kind, rings, area: Math.abs(area) / 2, box, from: start, to: list.length }
+          return { name: r.name, kind: r.kind, set: r.set, rings, area: Math.abs(area) / 2, box, from: start, to: list.length }
         })
         // vertex offsets of each region's lines inside the shared buffer
         let v = 0
@@ -470,6 +510,13 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
         }
         regionLines = buildLines(list)
       }
+      if (world.tree && world.tree.fill) {
+        const f = new Float32Array(world.tree.fill)
+        const buf = gl.createBuffer()
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+        gl.bufferData(gl.ARRAY_BUFFER, f, gl.STATIC_DRAW)
+        treeFill = { buf, count: f.length / 2 }
+      }
       if (world.tree) {
         treeLines = buildLines(world.tree.lines)
         treeSprites = buildSprites(world.tree.sprites, world.tree.atlas || world.atlas)
@@ -480,20 +527,23 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
       if (labelImg && world.labels) {
         const items = world.labels.items
         const cells = world.labels.cells
-        const lv2 = new Float32Array((items.length / 4) * 6 * 10)
-        let k = 0
-        for (let i = 0; i < items.length; i += 4) {
-          const cell = cells["lbl" + items[i + 3]]
-          const nativeW = (cell[2] - cell[0]) * labelImg.width
-          for (const [cx, cy] of QUAD) {
-            lv2.set([items[i], items[i + 1], cx, cy, cell[0], cell[1], cell[2], cell[3], items[i + 2], nativeW], k)
-            k += 10
+        const stride = items.length % 5 === 0 && items.length % 4 !== 0 ? 5 : world.labels.stride || 5
+        const make = (layer) => {
+          const out = []
+          for (let i = 0; i < items.length; i += stride) {
+            if ((stride === 5 ? items[i + 4] : 0) !== layer) continue
+            const cell = cells["lbl" + items[i + 3]]
+            const nativeW = (cell[2] - cell[0]) * labelImg.width
+            for (const [cx, cy] of QUAD) out.push(items[i], items[i + 1], cx, cy, cell[0], cell[1], cell[2], cell[3], items[i + 2], nativeW)
           }
+          const buf = gl.createBuffer()
+          gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(out), gl.STATIC_DRAW)
+          return { buf, count: out.length / 10 }
         }
-        labelCount = k / 10
-        labelBuf = gl.createBuffer()
-        gl.bindBuffer(gl.ARRAY_BUFFER, labelBuf)
-        gl.bufferData(gl.ARRAY_BUFFER, lv2, gl.STATIC_DRAW)
+        ;({ buf: labelBuf, count: labelCount } = make(0))
+        ;({ buf: treeLabelBuf, count: treeLabelCount } = make(1))
+        ;({ buf: underLabelBuf, count: underLabelCount } = make(2))
         labelTex = texture(labelImg)
       }
       ready = true
@@ -548,10 +598,13 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
     }
     const regionsAt = (cx, cy) => {
       const w = apply(inverse(view), toDisk(cx, cy))
-      return regions
+      const hit = regions
+        .filter((r) => r.set === "ground" || treeOn)
         .filter((r) => w[0] >= r.box[0] && w[0] <= r.box[2] && w[1] >= r.box[1] && w[1] <= r.box[3])
         .filter((r) => r.rings.some((ring) => inside(ring, w[0], w[1])))
         .sort((a, b) => a.area - b.area)
+      // with the Tree shown, its regions lie on top of the land's
+      return treeOn ? [...hit.filter((r) => r.set === "tree"), ...hit.filter((r) => r.set !== "tree")] : hit
     }
     const hover = (e) => {
       if (pointers.size || e.pointerType === "touch") return
@@ -708,6 +761,17 @@ void main(){ gl_FragColor = texture2D(atlas, vUv) * vA; }`
         })
         .catch(() => maximise(true))
     })
+    button("❦", "Древо: показать или скрыть", () => {
+      treeOn = !treeOn
+      try {
+        localStorage.setItem("dd-map-tree", treeOn ? "1" : "0")
+      } catch {}
+      bar.querySelector('[data-tree]').classList.toggle("dd-on", treeOn)
+      hovered = null
+      redraw()
+    })
+    bar.lastChild.dataset.tree = "1"
+    bar.lastChild.classList.toggle("dd-on", treeOn)
     button("✦", "К Древу", () => {
       const step = () => {
         const tree = apply(view, [0, 0])
