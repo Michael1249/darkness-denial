@@ -165,20 +165,33 @@ void main(){
 
   // name ribbons: placed under their place, sized for reading, shown once the place is big enough
   const LABEL_V = `${COMMON}
-attribute vec2 c; attribute vec2 corner; attribute vec4 uv; attribute vec2 sizes; // glyph size (hyperbolic), ribbon width (px)
+attribute vec2 c; attribute vec2 corner; attribute vec4 uv; attribute vec2 sizes; // glyph size (hyperbolic), native width (px)
+attribute float style;   // 0 a ribbon under a notable place, 1 a small name by a dot, 2 a land's name
 varying vec2 vUv; varying float vA;
 uniform float dpr;
 void main(){
   vec2 C = mob(c);
-  float glyph = sizes.x * unit(C);
-  vA = smoothstep(34., 50., glyph);
   vec2 cs = px(C);
-  if (vA <= 0. || cs.x < -400. || cs.y < -200. || cs.x > screen.x + 400. || cs.y > screen.y + 400.) {
-    gl_Position = vec4(2., 2., 2., 1.); return;
+  float aspect = (uv.w - uv.y) / (uv.z - uv.x);
+  vec2 pos;
+  if (style > 1.5) {
+    // a land's name lies on the map at its own width, shown while it reads well
+    float w = sizes.x * unit(C);
+    vA = smoothstep(90., 150., w) * (1. - smoothstep(1100., 1800., w)) * .95;
+    pos = cs + vec2((corner.x - .5) * w, (corner.y - .5) * w * aspect);
+  } else {
+    float glyph = sizes.x * unit(C);
+    vA = smoothstep(34., 50., glyph);
+    if (cs.x < -400. || cs.y < -200. || cs.x > screen.x + 400. || cs.y > screen.y + 400.) vA = 0.;
+    if (style > .5) {
+      float w = sizes.y * .5 * dpr;
+      pos = cs + vec2(corner.x * w + glyph * .12, (corner.y - .62) * w * aspect);   // beside the dot
+    } else {
+      float w = sizes.y * .5 * dpr * clamp(glyph / 70., .75, 1.15);
+      pos = cs + vec2((corner.x - .5) * w, corner.y * w * aspect + glyph * .08);   // just below the place
+    }
   }
-  float w = sizes.y * .5 * dpr * clamp(glyph / 70., .75, 1.15);
-  float h = w * (uv.w - uv.y) / (uv.z - uv.x);
-  vec2 pos = cs + vec2((corner.x - .5) * w, corner.y * h + glyph * .08);   // just below the place
+  if (vA <= 0.) { gl_Position = vec4(2., 2., 2., 1.); return; }
   vUv = mix(uv.xy, uv.zw, corner);
   gl_Position = clip(pos, 0.);
 }`
@@ -235,6 +248,12 @@ void main(){
       img.onerror = () => resolve(null)
       img.src = base + "tree.png"
     }),
+    new Promise((resolve) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => resolve(null)
+      img.src = base + "places.png"
+    }),
     fetch(base + "land.bin")
       .then((r) => (r.ok ? r.arrayBuffer() : null))
       .catch(() => null),
@@ -273,6 +292,8 @@ void main(){
     const landProg = program(LAND_V, LAND_F)
     let landMesh = null
     let riverLines = null
+    let placeSprites = null
+    let placesTex = null
     let treeFill = null
     let treeOn = false
     try {
@@ -283,7 +304,7 @@ void main(){
     let underLabelCount = 0
     let treeLabelCount = 0
     let treeRegions = []
-    const LABEL_LAYOUT = [["c", 2], ["corner", 2], ["uv", 4], ["sizes", 2]]
+    const LABEL_LAYOUT = [["c", 2], ["corner", 2], ["uv", 4], ["sizes", 2], ["style", 1]]
     let labelBuf = null
     let labelCount = 0
     let atlasTex = null
@@ -402,6 +423,12 @@ void main(){
       gl.bindTexture(gl.TEXTURE_2D, atlasTex)
       bind(sprites, spriteBuf, SPRITE_LAYOUT)
       gl.drawArrays(gl.TRIANGLES, 0, spriteCount)
+      if (placeSprites) {
+        // settlements and great places, drawn large in their own atlas; the depth buffer is shared
+        gl.bindTexture(gl.TEXTURE_2D, placesTex)
+        bind(sprites, placeSprites.buf, SPRITE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, placeSprites.count)
+      }
       if (treeOn && treeLines) {
         // the Great Tree's own map, laid over Morra: leaf land, its lines, then its glyphs
         gl.disable(gl.DEPTH_TEST)
@@ -473,7 +500,7 @@ void main(){
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       return tex
     }
-    data.then(([world, img, labelImg, treeImg, landBin]) => {
+    data.then(([world, img, labelImg, treeImg, placesImg, landBin]) => {
       limits = [world.limits.coast, world.limits.ocean, world.limits.ice]
       const CORNERS = [
         [0, -1],
@@ -560,6 +587,10 @@ void main(){
         landMesh = { buf, count: nt * 3 }
       }
       ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
+      if (world.places && placesImg) {
+        placeSprites = buildSprites(world.sprites, world.places)
+        placesTex = texture(placesImg)
+      }
       const regionSets = []
       for (const [set, src] of [["ground", world.regions], ["tree", world.tree && world.tree.regions]]) {
         if (src) regionSets.push([set, src])
@@ -621,19 +652,21 @@ void main(){
       if (labelImg && world.labels) {
         const items = world.labels.items
         const cells = world.labels.cells
-        const stride = items.length % 5 === 0 && items.length % 4 !== 0 ? 5 : world.labels.stride || 5
+        const stride = world.labels.stride || 5
         const make = (layer) => {
           const out = []
           for (let i = 0; i < items.length; i += stride) {
-            if ((stride === 5 ? items[i + 4] : 0) !== layer) continue
+            if (items[i + 4] !== layer) continue
             const cell = cells["lbl" + items[i + 3]]
+            const style = stride > 5 ? items[i + 5] : 0
             const nativeW = (cell[2] - cell[0]) * labelImg.width
-            for (const [cx, cy] of QUAD) out.push(items[i], items[i + 1], cx, cy, cell[0], cell[1], cell[2], cell[3], items[i + 2], nativeW)
+            for (const [cx, cy] of QUAD)
+              out.push(items[i], items[i + 1], cx, cy, cell[0], cell[1], cell[2], cell[3], items[i + 2], nativeW, style)
           }
           const buf = gl.createBuffer()
           gl.bindBuffer(gl.ARRAY_BUFFER, buf)
           gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(out), gl.STATIC_DRAW)
-          return { buf, count: out.length / 10 }
+          return { buf, count: out.length / 11 }
         }
         ;({ buf: labelBuf, count: labelCount } = make(0))
         ;({ buf: treeLabelBuf, count: treeLabelCount } = make(1))
