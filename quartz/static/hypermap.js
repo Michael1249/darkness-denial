@@ -26,7 +26,7 @@
   const BANK = [0.29, 0.208, 0.125]
   const WATER = [0.925, 0.863, 0.706]
   const BARK_GROUND = [0.6, 0.5, 0.38] // roots: muted towards the parchment
-  const BARK_TREE = [0.5, 0.39, 0.27]
+  const BARK_TREE = [0.66, 0.53, 0.37]
 
   // ---- complex numbers and disk automorphisms z -> (a z + b) / (conj(b) z + conj(a))
   const mul = (p, q) => [p[0] * q[0] - p[1] * q[1], p[0] * q[1] + p[1] * q[0]]
@@ -131,6 +131,15 @@ void main(){
   if (vRed > 4.5 && vRed < 5.5) {
     // a root or a bough: bark the colour of the trunk cut, round in the light from the
     // north-west, long fibres running along it, inked edges
+    if (rounded > .5) {
+      // the Tree's boughs: pale wood, inked edges, grain along the limb
+      float e2 = 1. - smoothstep(1.2, 2.2, fromEdge);
+      float grain = step(.8, fract(vDist / .035 + abs(vSide) * 2.)) * (1. - smoothstep(.0, .9, abs(abs(vSide) - .45))) * .5;
+      vec3 w = mix(bark, ink, max(e2, grain));
+      float a3 = vAlpha * clamp(fromEdge, 0., 1.);
+      gl_FragColor = vec4(w * a3, a3);
+      return;
+    }
     float v = vSide;                                   // -1 .. 1 across the limb
     float round_ = mix(1., 1. - .45 * v * v - .18 * v, rounded);   // lit on one flank, darker towards the other
     float fib = abs(fract(v * 3.2 + .35 * sin(vDist * 23. + v * 4.)) - .5);
