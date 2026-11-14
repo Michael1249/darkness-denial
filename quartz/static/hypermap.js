@@ -230,6 +230,39 @@ precision highp float;
 uniform vec3 colour;
 void main(){ gl_FragColor = vec4(colour, 1.); }`
 
+  // the haze under the Tree: a full-screen pass that mutes the land only where the Tree's
+  // foliage reaches (reach: its distance from the trunk in each direction), fading off softly
+  const HAZE_V = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p, 0., 1.); }`
+  const HAZE_F = `${COMMON}
+uniform vec4 inv;          // the view's inverse: a = inv.xy, b = inv.zw
+uniform float reach[${72}];
+uniform vec4 haze;         // colour and strength
+vec2 back(vec2 z){ return cdiv(cmul(inv.xy, z) + inv.zw, cmul(vec2(inv.z, -inv.w), z) + vec2(inv.x, -inv.y)); }
+float reachAt(float t){
+  float f = t * 72.;
+  int i = int(floor(f));
+  float a = 0., b = 0.;
+  for (int k = 0; k < 72; k++) {
+    if (k == i) a = reach[k];
+    if (k == (i + 1) - ((i + 1) / 72) * 72) b = reach[k];
+  }
+  return mix(a, b, fract(f));
+}
+void main(){
+  vec2 s = vec2(gl_FragCoord.x, screen.y - gl_FragCoord.y);
+  vec2 z = (s - screen.xy * .5) / (screen.z * screen.w);
+  if (dot(z, z) >= 1.) discard;
+  vec2 w = back(z);
+  float r = length(w);
+  float d = log((1. + min(r, .999999)) / (1. - min(r, .999999)));   // 2 atanh r
+  float theta = mod(atan(w.x, -w.y) / 6.2831853, 1.);
+  float edge = reachAt(theta);
+  float a = haze.a * (1. - smoothstep(edge - .05, edge + .22, d));
+  gl_FragColor = vec4(haze.rgb * a, a);
+}`
+
   // the land: a triangle mesh coloured by biome, mottled like old paper
   const LAND_V = `${COMMON}
 attribute vec2 p; attribute vec3 col; attribute float tex;
@@ -382,6 +415,8 @@ void main(){
     const labelProg = program(LABEL_V, LABEL_F)
     const fillProg = program(FILL_V, FILL_F)
     const landProg = program(LAND_V, LAND_F)
+    const hazeProg = program(HAZE_V, HAZE_F)
+    let treeHaze = null
     let landMesh = null
     let riverLines = null
     let placeSprites = null
@@ -557,8 +592,23 @@ void main(){
         gl.drawArrays(gl.TRIANGLES, hovered.first, hovered.count)
       }
       if (treeOn && treeLines) {
-        // the Great Tree's own map over the land: the clouds' shadow on the ground, its
-        // boughs, the clouds of leaves, their lines, then its glyphs and names
+        // the Great Tree's own map over the land: a haze over the land beneath it, the clouds'
+        // shadow on the ground, its boughs, the clouds of leaves, their lines, then its glyphs
+        // and names
+        if (treeHaze) {
+          gl.useProgram(hazeProg)
+          uniforms(hazeProg)
+          const iv = inverse(view)
+          gl.uniform4f(gl.getUniformLocation(hazeProg, "inv"), iv.a[0], iv.a[1], iv.b[0], iv.b[1])
+          gl.uniform1fv(gl.getUniformLocation(hazeProg, "reach"), treeHaze)
+          gl.uniform4f(gl.getUniformLocation(hazeProg, "haze"), 0.93, 0.89, 0.79, 0.55)
+          for (let i = 0; i < 8; i++) gl.disableVertexAttribArray(i)
+          gl.bindBuffer(gl.ARRAY_BUFFER, quad)
+          const loc = gl.getAttribLocation(hazeProg, "p")
+          gl.enableVertexAttribArray(loc)
+          gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0)
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+        }
         if (canopyMesh) {
           gl.useProgram(landProg)
           treeUniforms(landProg)
@@ -788,6 +838,7 @@ void main(){
         treeBranches = buildLines(world.tree.lines.filter((l) => l.k === "branch"))
         treeLines = buildLines(world.tree.lines.filter((l) => l.k !== "branch"))
         treeSprites = buildSprites(world.tree.sprites, world.tree.atlas || world.atlas)
+        if (world.tree.haze && world.tree.haze.length === 72) treeHaze = new Float32Array(world.tree.haze)
       }
 
       atlasTex = texture(img)
@@ -897,6 +948,9 @@ void main(){
       let best = null
       let bd = 1e9
       for (const n of notes) {
+        if (n.layer === 1 && !treeOn) continue
+        // with the Tree shown, its places are read first
+        if (best && best.layer === 1 && n.layer !== 1) continue
         const p = apply(view, [n.x, n.y])
         const l2 = p[0] ** 2 + p[1] ** 2
         if (l2 >= 1) continue
@@ -904,7 +958,7 @@ void main(){
         const sy = y0 + p[1] * zoom * h
         const reach = Math.max(14, 0.07 * (1 - l2) * 0.5 * zoom * h)
         const d = Math.hypot(cx - sx, cy - (sy - reach * 0.4))
-        if (d < reach && d < bd) {
+        if (d < reach && (d < bd || (n.layer === 1 && best && best.layer !== 1))) {
           bd = d
           best = n
         }
@@ -1096,7 +1150,7 @@ void main(){
         })
         .catch(() => maximise(true))
     })
-    button("❦", "Древо: показать или скрыть", () => {
+    button("", "Древо: показать или скрыть", () => {
       treeOn = !treeOn
       try {
         localStorage.setItem("dd-map-tree", treeOn ? "1" : "0")
@@ -1105,6 +1159,11 @@ void main(){
       hovered = null
       redraw()
     })
+    // a broad old tree: a crown of three clouds, a stout trunk spreading into roots
+    bar.lastChild.innerHTML =
+      '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto">' +
+      '<path fill="currentColor" d="M12 2.2c2 0 3.6 1.2 4.1 2.9 2.2.1 3.9 1.8 3.9 3.9 0 1.1-.4 2-1.1 2.7.5.5.8 1.2.8 2 0 1.7-1.4 3-3.1 3-1 0-1.9-.4-2.4-1.1-.3.2-.6.3-1 .4V18c0 1.2.9 2.3 2.4 2.8l1.6.5v.9H6.8v-.9l1.6-.5C9.9 20.3 10.8 19.2 10.8 18v-1.9c-.4-.1-.7-.2-1-.4-.6.7-1.4 1.1-2.4 1.1-1.7 0-3.1-1.3-3.1-3 0-.8.3-1.5.8-2C4.4 11 4 10.1 4 9c0-2.1 1.7-3.8 3.9-3.9C8.4 3.4 10 2.2 12 2.2z"/>' +
+      "</svg>"
     bar.lastChild.dataset.tree = "1"
     bar.lastChild.classList.toggle("dd-on", treeOn)
     button("✦", "К Древу", () => {
