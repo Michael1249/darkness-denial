@@ -12,7 +12,7 @@
   window.__ddHypermap = true
   const base = new URL("morra/", document.currentScript.src).href
 
-  const ZOOM = { start: 3.4, min: 1.15, max: 17 } // window radius in the disk is 1 / zoom
+  const ZOOM = { start: 3.4, min: 1.15, max: 17, flatMin: 0.2 } // window radius in the disk is 1 / zoom
   const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
   const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
@@ -51,12 +51,28 @@
 precision highp float;
 uniform vec4 m;      // view: a = m.xy, b = m.zw
 uniform vec4 screen; // width, height (device px), zoom, half of the smaller side
+uniform float flatk; // the projection: 0 the Poincaré disk, 1 the equal-area plane, between while it turns
 vec2 cmul(vec2 p, vec2 q){ return vec2(p.x*q.x - p.y*q.y, p.x*q.y + p.y*q.x); }
 vec2 cdiv(vec2 p, vec2 q){ return vec2(p.x*q.x + p.y*q.y, p.y*q.x - p.x*q.y) / dot(q, q); }
 vec2 mob(vec2 z){ return cdiv(cmul(m.xy, z) + m.zw, cmul(vec2(m.z, -m.w), z) + vec2(m.x, -m.y)); }
-vec2 px(vec2 z){ return screen.xy * .5 + z * screen.z * screen.w; }
+// equal-area: a point at distance d from the view's centre lies 2 sinh(d/2) from it (in disk
+// units, z / sqrt(1 - |z|^2)), so equal areas of the plane stay equal on screen
+vec2 proj(vec2 z){ return z * (1. + flatk * (inversesqrt(max(1. - dot(z, z), 1e-7)) - 1.)); }
+vec2 unproj(vec2 q){
+  float L = length(q);
+  if (flatk < 1e-4 || L < 1e-7) return q;
+  float lo = 0., hi = 1.;
+  for (int i = 0; i < 28; i++) {
+    float r = (lo + hi) * .5;
+    if (r * (1. + flatk * (inversesqrt(max(1. - r * r, 1e-7)) - 1.)) < L) lo = r; else hi = r;
+  }
+  return q / L * lo;
+}
+vec2 px(vec2 z){ return screen.xy * .5 + proj(z) * screen.z * screen.w; }
 vec4 clip(vec2 p, float depth){ return vec4(p.x / screen.x * 2. - 1., 1. - p.y / screen.y * 2., depth, 1.); }
-float unit(vec2 z){ return (1. - dot(z, z)) * .5 * screen.z * screen.w; }
+// pixels per hyperbolic unit at z; on the equal-area plane the same everywhere (stretched along
+// the radius and squeezed across it, glyphs keep the mean)
+float unit(vec2 z){ return mix(1. - dot(z, z), 1., flatk) * .5 * screen.z * screen.w; }
 `
   const BG_V = "attribute vec2 v; void main(){ gl_Position = vec4(v, 0.999, 1.); }"
   const BG_F = `${COMMON}
@@ -66,7 +82,7 @@ float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
   return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
 void main(){
   vec2 p = vec2(gl_FragCoord.x, screen.y - gl_FragCoord.y);
-  vec2 z = (p - screen.xy * .5) / (screen.z * screen.w);
+  vec2 z = unproj((p - screen.xy * .5) / (screen.z * screen.w));
   vec3 paper = vec3(.925, .863, .706);   // the sea: pale parchment, the colour of every water
   vec3 unknown = vec3(.965, .945, .9);
   float grain = noise(p / 90.) * .6 + noise(p / 23.) * .3 + noise(p / 5.) * .1;
@@ -252,7 +268,7 @@ float reachAt(float t){
 }
 void main(){
   vec2 s = vec2(gl_FragCoord.x, screen.y - gl_FragCoord.y);
-  vec2 z = (s - screen.xy * .5) / (screen.z * screen.w);
+  vec2 z = unproj((s - screen.xy * .5) / (screen.z * screen.w));
   if (dot(z, z) >= 1.) discard;
   vec2 w = back(z);
   float r = length(w);
@@ -475,6 +491,29 @@ void main(){
 
     let view = { a: [1, 0], b: [0, 0] }
     let zoom = ZOOM.start
+    // the projection, as in the shaders: 0 the disk, 1 the equal-area plane
+    let flat = 0
+    try {
+      flat = localStorage.getItem("dd-map-flat") === "1" ? 1 : 0
+    } catch {}
+    const stretch = (r) => 1 + flat * (1 / Math.sqrt(Math.max(1 - r * r, 1e-12)) - 1)
+    const proj = (z) => {
+      const k = stretch(Math.hypot(z[0], z[1]))
+      return [z[0] * k, z[1] * k]
+    }
+    const unproj = (q) => {
+      const L = Math.hypot(q[0], q[1])
+      if (flat < 1e-4 || L < 1e-9) return q
+      let lo = 0
+      let hi = 1
+      for (let i = 0; i < 48; i++) {
+        const r = (lo + hi) / 2
+        if (r * stretch(r) < L) lo = r
+        else hi = r
+      }
+      return [(q[0] / L) * lo, (q[1] / L) * lo]
+    }
+    const zoomMin = () => ZOOM.min + (ZOOM.flatMin - ZOOM.min) * flat
     let ready = false
     let queued = false
 
@@ -482,6 +521,7 @@ void main(){
       gl.uniform3f(gl.getUniformLocation(prog, "bark"), ...BARK_GROUND)
       gl.uniform1f(gl.getUniformLocation(prog, "rounded"), 0)
       gl.uniform4f(gl.getUniformLocation(prog, "m"), view.a[0], view.a[1], view.b[0], view.b[1])
+      gl.uniform1f(gl.getUniformLocation(prog, "flatk"), flat)
       gl.uniform4f(
         gl.getUniformLocation(prog, "screen"),
         canvas.width,
@@ -659,7 +699,7 @@ void main(){
     // for checking the map by script: look at disk point (x, y) at a given zoom, drawn at once
     host.__ddLook = (x, y, z) => {
       view = carry([x, y], [0, 0])
-      zoom = Math.min(ZOOM.max, Math.max(ZOOM.min, z))
+      zoom = Math.min(ZOOM.max, Math.max(zoomMin(), z))
       draw()
     }
 
@@ -877,7 +917,7 @@ void main(){
     const toDisk = (x, y, z = zoom) => {
       const r = canvas.getBoundingClientRect()
       const s = Math.min(r.width, r.height) / 2
-      return clampDisk([(x - r.left - r.width / 2) / s / z, (y - r.top - r.height / 2) / s / z])
+      return clampDisk(unproj([(x - r.left - r.width / 2) / s / z, (y - r.top - r.height / 2) / s / z]))
     }
     // the view centre may not go farther than REACH from the Tree; at the limit it slides along
     const R_REACH = Math.tanh(REACH / 2)
@@ -908,7 +948,7 @@ void main(){
     // zoom about a screen point, keeping the map point under it in place
     const zoomAt = (x, y, factor) => {
       const w = apply(inverse(view), toDisk(x, y)) // the point under the pointer stays there
-      const nz = Math.min(ZOOM.max, Math.max(ZOOM.min, zoom * factor))
+      const nz = Math.min(ZOOM.max, Math.max(zoomMin(), zoom * factor))
       if (nz === zoom) return
       zoom = nz
       setCentre(centreFor(w, toDisk(x, y)))
@@ -951,12 +991,13 @@ void main(){
         if (n.layer === 1 && !treeOn) continue
         // with the Tree shown, its places are read first
         if (best && best.layer === 1 && n.layer !== 1) continue
-        const p = apply(view, [n.x, n.y])
-        const l2 = p[0] ** 2 + p[1] ** 2
+        const p0 = apply(view, [n.x, n.y])
+        const l2 = p0[0] ** 2 + p0[1] ** 2
         if (l2 >= 1) continue
+        const p = proj(p0)
         const sx = x0 + p[0] * zoom * h
         const sy = y0 + p[1] * zoom * h
-        const reach = Math.max(14, 0.07 * (1 - l2) * 0.5 * zoom * h)
+        const reach = Math.max(14, 0.07 * (1 - l2 + (l2 * flat)) * 0.5 * zoom * h)
         const d = Math.hypot(cx - sx, cy - (sy - reach * 0.4))
         if (d < reach && (d < bd || (n.layer === 1 && best && best.layer !== 1))) {
           bd = d
@@ -1009,7 +1050,7 @@ void main(){
     host.__ddGroundAt = (x, y) => apply(inverse(view), toDisk(x, y))
     host.__ddGroundScreen = (w) => {
       const [cx, cy, h] = half()
-      const p = apply(view, w)
+      const p = proj(apply(view, w))
       return [cx + p[0] * zoom * h, cy + p[1] * zoom * h]
     }
     const pointers = new Map()
@@ -1166,6 +1207,36 @@ void main(){
       "</svg>"
     bar.lastChild.dataset.tree = "1"
     bar.lastChild.classList.toggle("dd-on", treeOn)
+    // the projection: the disk (the far lands shrink towards the rim) or the equal-area plane
+    // (every land at its true size: the middle smaller, the far lands opened out). It turns
+    // smoothly, keeping the land at the window's edge where it is.
+    let turning = 0
+    button("", "Проекция: круг или равновеликая плоскость", () => {
+      cancelAnimationFrame(turning)
+      const from = flat
+      const to = flat > 0.5 ? 0 : 1
+      try {
+        localStorage.setItem("dd-map-flat", to ? "1" : "0")
+      } catch {}
+      bar.querySelector("[data-flat]").classList.toggle("dd-on", to === 1)
+      const edge = Math.hypot(...unproj([1 / zoom, 0])) // the disk point at the window's edge
+      const t0 = performance.now()
+      const step = (now) => {
+        const k = Math.min(1, (now - t0) / 700)
+        flat = from + (to - from) * (k < 0.5 ? 2 * k * k : 1 - 2 * (1 - k) ** 2)
+        zoom = Math.min(ZOOM.max, Math.max(zoomMin(), 1 / (edge * stretch(edge))))
+        tip.style.opacity = 0
+        redraw()
+        if (k < 1) turning = requestAnimationFrame(step)
+      }
+      turning = requestAnimationFrame(step)
+    })
+    bar.lastChild.innerHTML =
+      '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto" fill="none" stroke="currentColor" stroke-width="1.6">' +
+      '<circle cx="12" cy="12" r="9"/><path d="M12 3c-3.2 2.6-3.2 15.4 0 18M12 3c3.2 2.6 3.2 15.4 0 18M3.5 9h17M3.5 15h17"/>' +
+      "</svg>"
+    bar.lastChild.dataset.flat = "1"
+    bar.lastChild.classList.toggle("dd-on", flat > 0.5)
     button("✦", "К Древу", () => {
       const step = () => {
         const tree = apply(view, [0, 0])
