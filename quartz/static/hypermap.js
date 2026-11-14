@@ -297,16 +297,16 @@ void main(){
   const LAND_V = `${COMMON}
 attribute vec2 p; attribute vec3 col; attribute float tex;
 uniform vec2 offs;   // a screen offset, for the canopy's shadow on the ground
-varying vec3 vC; varying vec2 vW; varying float vTex; varying float vPpu;
+varying vec3 vC; varying vec2 vP; varying float vTex; varying float vPpu;
 void main(){
-  vC = col; vW = p * 2. / (1. - dot(p, p));   // roughly hyperbolic units, so the mottling keeps its size
+  vC = col; vP = p;                            // the disk point: the textures are built on it below
   vTex = tex;
   vPpu = unit(mob(p));                         // screen pixels per hyperbolic unit here
   gl_Position = clip(px(mob(p)) + offs, 0.);
 }`
   const LAND_F = `
 precision highp float;
-varying vec3 vC; varying vec2 vW; varying float vTex; varying float vPpu;
+varying vec3 vC; varying vec2 vP; varying float vTex; varying float vPpu;
 uniform float shade;   // above 0: draw only a translucent shadow
 uniform float leafy;   // 1 for the Tree's foliage: tufts of needles over the colour
 vec2 hash2(vec2 p){ return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
@@ -368,15 +368,32 @@ float turf(float id, vec2 q){
 }
 void main(){
   if (shade > 0.) { gl_FragColor = vec4(vec3(.17, .12, .06) * shade, shade); return; }
-  float m = noise(vW * 3.) * .55 + noise(vW * 11.) * .3 + noise(gl_FragCoord.xy / 3.) * .15;
+  // Texture coordinates of even size in hyperbolic units, everywhere: the disk point is
+  // conformal (shapes keep their proportions) but the plane's scale grows towards the rim, by
+  // lambda = 2 / (1 - |p|^2). So the disk point is scaled by the two powers of two either side
+  // of lambda, and the two textures blended (weights keeping the contrast even), so the
+  // mottling neither stretches into bands at the rim nor changes its size.
+  float lam = 2. / max(1. - dot(vP, vP), 1e-5);
+  float L = log2(lam);
+  float k0 = floor(L);
+  float t = L - k0;
+  vec2 Q0 = vP * exp2(k0) + vec2(mod(k0, 7.) * 17.31, mod(k0, 5.) * 9.73);
+  vec2 Q1 = vP * exp2(k0 + 1.) + vec2(mod(k0 + 1., 7.) * 17.31, mod(k0 + 1., 5.) * 9.73);
+  float w0 = cos(t * 1.5708), w1 = sin(t * 1.5708);
+  float m0 = noise(Q0 * 3.) * .55 + noise(Q0 * 11.) * .3;
+  float m1 = noise(Q1 * 3.) * .55 + noise(Q1 * 11.) * .3;
+  float m = .425 + (m0 - .425) * w0 + (m1 - .425) * w1 + noise(gl_FragCoord.xy / 3.) * .15;
   vec3 c = vC * (.9 + .14 * m);
   // the holding's own parchment, fading out where it would be too fine to see
   float scale = .12;
   float fade = smoothstep(4., 9., scale * vPpu / 4.);
-  c *= mix(1., turf(floor(vTex + .5), vW / scale), fade);
+  float id = floor(vTex + .5);
+  float tf = 1. + (turf(id, Q0 / scale) - 1.) * w0 + (turf(id, Q1 / scale) - 1.) * w1;
+  c *= mix(1., tf, fade);
   if (leafy > .5) {
-    // clumps of needles at two scales
-    c *= .9 + .1 * clumps(vW * 40.);   // only a hint of tufts, in keeping with the map
+    // a hint of tufts of needles, in keeping with the map
+    float cl = .9 + (clumps(Q0 * 40.) - .9) * w0 + (clumps(Q1 * 40.) - .9) * w1;
+    c *= .9 + .1 * cl;
   }
   gl_FragColor = vec4(c, 1.);
 }`
