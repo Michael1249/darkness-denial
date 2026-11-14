@@ -14,7 +14,7 @@
 
   // window radius in the disk is 1 / zoom; the farthest out per projection: disk, equal-area, equidistant
   const ZOOM = { start: 3.4, max: 17, mins: [1.15, 0.2, 0.45] }
-  const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
+  const REACH = 4.7 // farthest hyperbolic distance of the view centre from the Tree: out over the ocean
   const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
   const BANK = [0.29, 0.208, 0.125]
