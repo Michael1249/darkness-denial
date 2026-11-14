@@ -5,8 +5,8 @@
 // points are moved by the view's Möbius transform and glyphs are drawn upright at their local
 // scale, so whatever you look at up close is undistorted; only the zoomed-out view bends.
 // Dragging moves along the plane, always as a pure shift, so the map never turns and north
-// stays up; zoom magnifies the window onto the disk within limits, and the view cannot leave the coast far
-// behind.
+// stays up; zoom magnifies the window onto the disk within limits, and the view cannot leave the
+// coast far behind. Quartz swaps pages without reloading, so windows are set up on every "nav" event.
 ;(() => {
   if (window.__ddHypermap) return
   window.__ddHypermap = true
