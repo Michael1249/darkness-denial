@@ -4,9 +4,9 @@
 // lake or town is a glyph with a position and a size in hyperbolic units. Each frame the
 // points are moved by the view's Möbius transform and glyphs are drawn upright at their local
 // scale, so whatever you look at up close is undistorted; only the zoomed-out view bends.
-// Dragging moves along the plane (the map turns as you go: that is the geometry), zoom
-// magnifies the window onto the disk within limits, and the view cannot leave the coast far
-// behind. Quartz swaps pages without reloading, so windows are set up on every "nav" event.
+// Dragging moves along the plane, always as a pure shift, so the map never turns and north
+// stays up; zoom magnifies the window onto the disk within limits, and the view cannot leave the coast far
+// behind.
 ;(() => {
   if (window.__ddHypermap) return
   window.__ddHypermap = true
@@ -830,27 +830,37 @@ void main(){
     }
     // the view centre may not go farther than REACH from the Tree; at the limit it slides along
     const R_REACH = Math.tanh(REACH / 2)
-    const move = (mv) => {
+    // The view is always a pure shift of the plane, never turned: the point c of the disk is
+    // carried to the middle of the screen without rotation, so north stays up there. (Shifts
+    // composed on the hyperbolic plane turn it; keeping only the shift undoes that.)
+    const centred = (c) => shift([-c[0], -c[1]])
+    const setCentre = (c) => {
       tip.style.opacity = 0 // the map moves under the tip: it goes
-      let next = compose(mv, view)
-      const c = apply(inverse(next), [0, 0])
       const l = Math.hypot(c[0], c[1])
-      if (l > R_REACH) next = compose(next, carry([(c[0] / l) * R_REACH, (c[1] / l) * R_REACH], c))
-      const moved =
-        Math.hypot(next.b[0] - view.b[0], next.b[1] - view.b[1]) +
-        Math.hypot(next.a[0] - view.a[0], next.a[1] - view.a[1])
+      if (l > R_REACH) c = [(c[0] / l) * R_REACH, (c[1] / l) * R_REACH]
+      const next = centred(c)
+      const moved = Math.hypot(next.b[0] - view.b[0], next.b[1] - view.b[1]) + Math.hypot(next.a[0] - view.a[0], next.a[1] - view.a[1])
       view = next
       redraw()
       return moved > 1e-7
     }
+    // the centre that puts the plane's point w at the view's point q with no turn: solves
+    // w = (q + c) / (conj(c) q + 1) for c
+    const centreFor = (w, q) => {
+      const a = mul(w, q)
+      const b = [w[0] - q[0], w[1] - q[1]]
+      const ab = mul(a, conj(b))
+      const k = 1 - (a[0] ** 2 + a[1] ** 2)
+      return [(b[0] + ab[0]) / k, (b[1] + ab[1]) / k]
+    }
+    const move = (mv) => setCentre(apply(inverse(compose(mv, view)), [0, 0]))
     // zoom about a screen point, keeping the map point under it in place
     const zoomAt = (x, y, factor) => {
-      const z0 = toDisk(x, y)
+      const w = apply(inverse(view), toDisk(x, y)) // the point under the pointer stays there
       const nz = Math.min(ZOOM.max, Math.max(ZOOM.min, zoom * factor))
       if (nz === zoom) return
       zoom = nz
-      move(carry(z0, toDisk(x, y)))
-      redraw()
+      setCentre(centreFor(w, toDisk(x, y)))
     }
 
     // regions: hidden until the pointer rests on one; then the smallest region under it
@@ -953,10 +963,14 @@ void main(){
     let vel = [0, 0]
     let last = 0
     let glide = 0
+    let grab = null // the plane's point held under the pointer while dragging
+    let grabQ = null // and where on the view it is now
     const stop = () => cancelAnimationFrame(glide)
     canvas.addEventListener("pointerdown", (e) => {
       stop()
       pointers.set(e.pointerId, [e.clientX, e.clientY])
+      grabQ = toDisk(e.clientX, e.clientY)
+      grab = apply(inverse(view), grabQ)
       try {
         canvas.setPointerCapture(e.pointerId)
       } catch {}
@@ -979,7 +993,8 @@ void main(){
         const p = toDisk(...prev)
         const q = toDisk(...cur)
         vel = [((q[0] - p[0]) / dt) * 16, ((q[1] - p[1]) / dt) * 16]
-        move(carry(p, q))
+        grabQ = q
+        setCentre(centreFor(grab, q))
       }
       pointers.set(e.pointerId, cur)
       if (pointers.size === 2 && pinch) {
@@ -993,7 +1008,13 @@ void main(){
       if (!pointers.has(e.pointerId)) return
       pointers.delete(e.pointerId)
       if (pointers.size < 2) pinch = null
-      if (pointers.size) return
+      if (pointers.size) {
+        // one finger lifted from a pinch: the other holds the map from here
+        const [rest] = [...pointers.values()]
+        grabQ = toDisk(...rest)
+        grab = apply(inverse(view), grabQ)
+        return
+      }
       canvas.classList.remove("dd-grabbing")
       if (performance.now() - last > 80) return
       // coast and slow down; the speed is capped so a flick cannot throw the map far
@@ -1003,7 +1024,9 @@ void main(){
       if (l > cap) v = [(v[0] / l) * cap, (v[1] / l) * cap]
       const step = () => {
         v = [v[0] * 0.9, v[1] * 0.9]
-        if (Math.hypot(v[0], v[1]) < 0.0002 / zoom || !move(carry([0, 0], v))) return
+        if (!grab || Math.hypot(v[0], v[1]) < 0.0002 / zoom) return
+        grabQ = clampDisk([grabQ[0] + v[0], grabQ[1] + v[1]], 0.99)
+        if (!setCentre(centreFor(grab, grabQ))) return
         glide = requestAnimationFrame(step)
       }
       glide = requestAnimationFrame(step)
