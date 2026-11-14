@@ -12,7 +12,8 @@
   window.__ddHypermap = true
   const base = new URL("morra/", document.currentScript.src).href
 
-  const ZOOM = { start: 3.4, min: 1.15, max: 17, flatMin: 0.2 } // window radius in the disk is 1 / zoom
+  // window radius in the disk is 1 / zoom; the farthest out per projection: disk, equal-area, equidistant
+  const ZOOM = { start: 3.4, max: 17, mins: [1.15, 0.2, 0.45] }
   const REACH = 3.75 // farthest hyperbolic distance of the view centre from the Tree
   const INK = [0.243, 0.165, 0.09] // the brown ink of the parchment glyphs
   const RED = [0.608, 0.227, 0.141]
@@ -51,28 +52,41 @@
 precision highp float;
 uniform vec4 m;      // view: a = m.xy, b = m.zw
 uniform vec4 screen; // width, height (device px), zoom, half of the smaller side
-uniform float flatk; // the projection: 0 the Poincaré disk, 1 the equal-area plane, between while it turns
+// the projection, as weights of three (one of them 1, mixed only while it turns):
+// x the Poincaré disk, y the equal-area plane, z the equidistant plane
+uniform vec3 projw;
 vec2 cmul(vec2 p, vec2 q){ return vec2(p.x*q.x - p.y*q.y, p.x*q.y + p.y*q.x); }
 vec2 cdiv(vec2 p, vec2 q){ return vec2(p.x*q.x + p.y*q.y, p.y*q.x - p.x*q.y) / dot(q, q); }
 vec2 mob(vec2 z){ return cdiv(cmul(m.xy, z) + m.zw, cmul(vec2(m.z, -m.w), z) + vec2(m.x, -m.y)); }
-// equal-area: a point at distance d from the view's centre lies 2 sinh(d/2) from it (in disk
-// units, z / sqrt(1 - |z|^2)), so equal areas of the plane stay equal on screen
-vec2 proj(vec2 z){ return z * (1. + flatk * (inversesqrt(max(1. - dot(z, z), 1e-7)) - 1.)); }
+// a point at distance d from the view's centre lies, in disk units, tanh(d/2) from it on the disk,
+// sinh(d/2) on the equal-area plane (equal areas stay equal) and d/2 on the equidistant one
+// (distances from the centre are true); r = tanh(d/2)
+float atanh_(float r){ return .5 * log((1. + r) / (1. - r)); }
+float radial(float r){
+  r = min(r, .9999999);
+  return projw.x * r + projw.y * r * inversesqrt(max(1. - r * r, 1e-7)) + projw.z * atanh_(r);
+}
+vec2 proj(vec2 z){ float r = length(z); return r < 1e-7 ? z : z / r * radial(r); }
 vec2 unproj(vec2 q){
   float L = length(q);
-  if (flatk < 1e-4 || L < 1e-7) return q;
+  if (projw.x > .9999 || L < 1e-7) return q;
   float lo = 0., hi = 1.;
   for (int i = 0; i < 28; i++) {
     float r = (lo + hi) * .5;
-    if (r * (1. + flatk * (inversesqrt(max(1. - r * r, 1e-7)) - 1.)) < L) lo = r; else hi = r;
+    if (radial(r) < L) lo = r; else hi = r;
   }
   return q / L * lo;
 }
 vec2 px(vec2 z){ return screen.xy * .5 + proj(z) * screen.z * screen.w; }
 vec4 clip(vec2 p, float depth){ return vec4(p.x / screen.x * 2. - 1., 1. - p.y / screen.y * 2., depth, 1.); }
-// pixels per hyperbolic unit at z; on the equal-area plane the same everywhere (stretched along
-// the radius and squeezed across it, glyphs keep the mean)
-float unit(vec2 z){ return mix(1. - dot(z, z), 1., flatk) * .5 * screen.z * screen.w; }
+// pixels per hyperbolic unit at z: glyphs take the mean of the stretch along the radius and
+// across it; on the equal-area plane that is the same everywhere
+float unit(vec2 z){
+  float r2 = min(dot(z, z), .9999998);
+  float d = 2. * atanh_(sqrt(r2));
+  float eq = d < 1e-3 ? 1. : sqrt(d / (.5 * (exp(d) - exp(-d))));
+  return (projw.x * (1. - r2) + projw.y + projw.z * eq) * .5 * screen.z * screen.w;
+}
 `
   const BG_V = "attribute vec2 v; void main(){ gl_Position = vec4(v, 0.999, 1.); }"
   const BG_F = `${COMMON}
@@ -491,29 +505,36 @@ void main(){
 
     let view = { a: [1, 0], b: [0, 0] }
     let zoom = ZOOM.start
-    // the projection, as in the shaders: 0 the disk, 1 the equal-area plane
-    let flat = 0
+    // the projection, as in the shaders: weights of the disk, the equal-area and the equidistant plane
+    let proj_ = 0
     try {
-      flat = localStorage.getItem("dd-map-flat") === "1" ? 1 : 0
+      proj_ = Number(localStorage.getItem("dd-map-proj")) || 0
+      if (!(proj_ >= 0 && proj_ <= 2)) proj_ = 0
     } catch {}
-    const stretch = (r) => 1 + flat * (1 / Math.sqrt(Math.max(1 - r * r, 1e-12)) - 1)
+    let projw = [0, 1, 2].map((i) => (i === proj_ ? 1 : 0))
+    const radial = (r) => {
+      r = Math.min(r, 1 - 1e-12)
+      return projw[0] * r + (projw[1] * r) / Math.sqrt(1 - r * r) + projw[2] * Math.atanh(r)
+    }
     const proj = (z) => {
-      const k = stretch(Math.hypot(z[0], z[1]))
+      const r = Math.hypot(z[0], z[1])
+      if (r < 1e-12) return z
+      const k = radial(r) / r
       return [z[0] * k, z[1] * k]
     }
     const unproj = (q) => {
       const L = Math.hypot(q[0], q[1])
-      if (flat < 1e-4 || L < 1e-9) return q
+      if (projw[0] > 0.9999 || L < 1e-12) return q
       let lo = 0
       let hi = 1
       for (let i = 0; i < 48; i++) {
         const r = (lo + hi) / 2
-        if (r * stretch(r) < L) lo = r
+        if (radial(r) < L) lo = r
         else hi = r
       }
       return [(q[0] / L) * lo, (q[1] / L) * lo]
     }
-    const zoomMin = () => ZOOM.min + (ZOOM.flatMin - ZOOM.min) * flat
+    const zoomMin = () => projw.reduce((s, w, i) => s + w * ZOOM.mins[i], 0)
     let ready = false
     let queued = false
 
@@ -521,7 +542,7 @@ void main(){
       gl.uniform3f(gl.getUniformLocation(prog, "bark"), ...BARK_GROUND)
       gl.uniform1f(gl.getUniformLocation(prog, "rounded"), 0)
       gl.uniform4f(gl.getUniformLocation(prog, "m"), view.a[0], view.a[1], view.b[0], view.b[1])
-      gl.uniform1f(gl.getUniformLocation(prog, "flatk"), flat)
+      gl.uniform3f(gl.getUniformLocation(prog, "projw"), ...projw)
       gl.uniform4f(
         gl.getUniformLocation(prog, "screen"),
         canvas.width,
@@ -997,7 +1018,7 @@ void main(){
         const p = proj(p0)
         const sx = x0 + p[0] * zoom * h
         const sy = y0 + p[1] * zoom * h
-        const reach = Math.max(14, 0.07 * (1 - l2 + (l2 * flat)) * 0.5 * zoom * h)
+        const reach = Math.max(14, 0.07 * (projw[0] * (1 - l2) + 1 - projw[0]) * 0.5 * zoom * h)
         const d = Math.hypot(cx - sx, cy - (sy - reach * 0.4))
         if (d < reach && (d < bd || (n.layer === 1 && best && best.layer !== 1))) {
           bd = d
@@ -1207,36 +1228,48 @@ void main(){
       "</svg>"
     bar.lastChild.dataset.tree = "1"
     bar.lastChild.classList.toggle("dd-on", treeOn)
-    // the projection: the disk (the far lands shrink towards the rim) or the equal-area plane
-    // (every land at its true size: the middle smaller, the far lands opened out). It turns
-    // smoothly, keeping the land at the window's edge where it is.
+    // the projection, in turn: the disk (the far lands shrink towards the rim), the equal-area
+    // plane (every land at its true size: the middle smaller, the far lands opened out) and the
+    // equidistant plane (every place at its true distance from the middle of the window). It
+    // turns smoothly, keeping the land at the window's edge where it is.
+    const PROJ = [
+      ["Проекция: круг", '<circle cx="12" cy="12" r="9"/><path d="M12 3c-3.2 2.6-3.2 15.4 0 18M12 3c3.2 2.6 3.2 15.4 0 18M3.5 9h17M3.5 15h17"/>'],
+      ["Проекция: равновеликая (площади верны)", '<rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path d="M9.2 3.5v17M14.8 3.5v17M3.5 9.2h17M3.5 14.8h17"/>'],
+      ["Проекция: равнопромежуточная (расстояния от центра верны)", '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2"/><path d="M12 12h9"/>'],
+    ]
     let turning = 0
-    button("", "Проекция: круг или равновеликая плоскость", () => {
+    const showProj = () => {
+      const b = bar.querySelector("[data-proj]")
+      const [title, icon] = PROJ[proj_]
+      b.title = `${title}. Нажмите, чтобы сменить`
+      b.setAttribute("aria-label", b.title)
+      b.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto" fill="none" stroke="currentColor" stroke-width="1.6">${icon}</svg>`
+      b.classList.toggle("dd-on", proj_ > 0)
+    }
+    button("", "Проекция", () => {
       cancelAnimationFrame(turning)
-      const from = flat
-      const to = flat > 0.5 ? 0 : 1
+      const from = projw.slice()
+      proj_ = (proj_ + 1) % 3
+      const to = [0, 1, 2].map((i) => (i === proj_ ? 1 : 0))
       try {
-        localStorage.setItem("dd-map-flat", to ? "1" : "0")
+        localStorage.setItem("dd-map-proj", String(proj_))
       } catch {}
-      bar.querySelector("[data-flat]").classList.toggle("dd-on", to === 1)
+      showProj()
       const edge = Math.hypot(...unproj([1 / zoom, 0])) // the disk point at the window's edge
       const t0 = performance.now()
       const step = (now) => {
         const k = Math.min(1, (now - t0) / 700)
-        flat = from + (to - from) * (k < 0.5 ? 2 * k * k : 1 - 2 * (1 - k) ** 2)
-        zoom = Math.min(ZOOM.max, Math.max(zoomMin(), 1 / (edge * stretch(edge))))
+        const e = k < 0.5 ? 2 * k * k : 1 - 2 * (1 - k) ** 2
+        projw = from.map((f, i) => f + (to[i] - f) * e)
+        zoom = Math.min(ZOOM.max, Math.max(zoomMin(), 1 / radial(edge)))
         tip.style.opacity = 0
         redraw()
         if (k < 1) turning = requestAnimationFrame(step)
       }
       turning = requestAnimationFrame(step)
     })
-    bar.lastChild.innerHTML =
-      '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto" fill="none" stroke="currentColor" stroke-width="1.6">' +
-      '<circle cx="12" cy="12" r="9"/><path d="M12 3c-3.2 2.6-3.2 15.4 0 18M12 3c3.2 2.6 3.2 15.4 0 18M3.5 9h17M3.5 15h17"/>' +
-      "</svg>"
-    bar.lastChild.dataset.flat = "1"
-    bar.lastChild.classList.toggle("dd-on", flat > 0.5)
+    bar.lastChild.dataset.proj = "1"
+    showProj()
     button("✦", "К Древу", () => {
       const step = () => {
         const tree = apply(view, [0, 0])
