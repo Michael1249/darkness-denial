@@ -190,7 +190,7 @@ void main(){
   // name ribbons: placed under their place, sized for reading, shown once the place is big enough
   const LABEL_V = `${COMMON}
 attribute vec2 c; attribute vec2 corner; attribute vec4 uv; attribute vec2 sizes; // glyph size (hyperbolic), native width (px)
-attribute float style;   // 0 a ribbon under a notable place, 1 a small name by a dot, 2 a land's name
+attribute float style;   // 0 a ribbon under a notable place, 1 a small name by a dot
 varying vec2 vUv; varying float vA;
 uniform float dpr;
 void main(){
@@ -198,12 +198,7 @@ void main(){
   vec2 cs = px(C);
   float aspect = (uv.w - uv.y) / (uv.z - uv.x);
   vec2 pos;
-  if (style > 1.5) {
-    // a land's name lies on the map at its own width, shown while it reads well
-    float w = sizes.x * unit(C);
-    vA = smoothstep(90., 150., w) * (1. - smoothstep(1100., 1800., w)) * .95;
-    pos = cs + vec2((corner.x - .5) * w, (corner.y - .5) * w * aspect);
-  } else {
+  {
     float glyph = sizes.x * unit(C);
     vA = smoothstep(34., 50., glyph);
     if (cs.x < -400. || cs.y < -200. || cs.x > screen.x + 400. || cs.y > screen.y + 400.) vA = 0.;
