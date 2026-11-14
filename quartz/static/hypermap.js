@@ -143,6 +143,13 @@ void main(){
     gl_FragColor = vec4(col * a2, a2);
     return;
   }
+  if (vRed > 7.5) {
+    // a holding's border: dash, dot (lengths in hyperbolic units)
+    float t = fract(vDist / .09);
+    if (!(t < .52 || (t > .66 && t < .74))) discard;
+    gl_FragColor = vec4(ink * a * .9, a * .9);
+    return;
+  }
   if (vRed > 2.5 && vRed < 4.5) {
     // roads: dashes; sea routes: shorter dashes (lengths in hyperbolic units)
     float period = vRed > 3.5 ? .035 : .028;
@@ -229,16 +236,18 @@ void main(){ gl_FragColor = vec4(colour, 1.); }`
 
   // the land: a triangle mesh coloured by biome, mottled like old paper
   const LAND_V = `${COMMON}
-attribute vec2 p; attribute vec3 col;
+attribute vec2 p; attribute vec3 col; attribute float tex;
 uniform vec2 offs;   // a screen offset, for the canopy's shadow on the ground
-varying vec3 vC; varying vec2 vW;
+varying vec3 vC; varying vec2 vW; varying float vTex; varying float vPpu;
 void main(){
   vC = col; vW = p * 2. / (1. - dot(p, p));   // roughly hyperbolic units, so the mottling keeps its size
+  vTex = tex;
+  vPpu = unit(mob(p));                         // screen pixels per hyperbolic unit here
   gl_Position = clip(px(mob(p)) + offs, 0.);
 }`
   const LAND_F = `
 precision highp float;
-varying vec3 vC; varying vec2 vW;
+varying vec3 vC; varying vec2 vW; varying float vTex; varying float vPpu;
 uniform float shade;   // above 0: draw only a translucent shadow
 uniform float leafy;   // 1 for the Tree's foliage: tufts of needles over the colour
 vec2 hash2(vec2 p){ return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
@@ -260,10 +269,52 @@ float clumps(vec2 q){
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
   return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
+// the turf of each holding of the marsh round the Tree: what the ground is like there, in tone
+// only (never drawn strokes). Returns a factor on the colour.
+float hash1(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 15731.743); }
+float cells(vec2 q, out float edge){
+  vec2 i = floor(q), f = fract(q);
+  float d1 = 9., d2 = 9.;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 o = vec2(float(x), float(y));
+    vec2 r = o + vec2(hash1(i + o), hash1(i + o + 7.3)) * .8 + .1 - f;
+    float d = dot(r, r);
+    if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d;
+  }
+  edge = sqrt(d2) - sqrt(d1);
+  return sqrt(d1);
+}
+float turf(float id, vec2 q){
+  float e;
+  if (id < .5) return 1.;
+  if (id < 1.5) return 1. + .05 * (noise(q * 6.) - .5) + .03 * (noise(q * 17.) - .5);      // trodden earth
+  if (id < 2.5) return 1. + .08 * (smoothstep(.35, .65, noise(q * 2.4)) - .5) + .03 * (noise(q * 11.) - .5);   // leaf litter
+  if (id < 3.5) {                                                                           // mud with fine cracks
+    cells(q * 1.6, e);
+    return 1. + .02 * (noise(q * 3.) - .5) - .07 * (1. - smoothstep(.02, .07, e));
+  }
+  if (id < 4.5) {                                                                           // cushions of wet moss
+    float d = cells(q * 2.4, e);
+    return 1. + .06 * (.5 - d) - .04 * (1. - smoothstep(.05, .2, e));
+  }
+  if (id < 5.5) {                                                                           // reed turf: short fibres
+    vec2 r = vec2(q.x * .9 + q.y * .45, -q.x * .45 + q.y * .9);
+    return 1. + .07 * (noise(vec2(r.x * 10., r.y * 1.5)) - .5) + .03 * (noise(q * 5.) - .5);
+  }
+  if (id < 7.5) {                                                                           // dry tussocks
+    float d = cells(q * (id < 6.5 ? 1.8 : 2.2), e);
+    return 1. + .07 * (smoothstep(.45, .1, d) - .3) + .03 * (noise(q * 14.) - .5);
+  }
+  return 1. - .06 * smoothstep(.4, .7, noise(q * 1.3)) + .05 * (noise(vec2(q.x * 12., q.y * 2.)) - .5);   // dark fibrous peat
+}
 void main(){
   if (shade > 0.) { gl_FragColor = vec4(vec3(.17, .12, .06) * shade, shade); return; }
   float m = noise(vW * 3.) * .55 + noise(vW * 11.) * .3 + noise(gl_FragCoord.xy / 3.) * .15;
   vec3 c = vC * (.9 + .14 * m);
+  // the holding's own parchment, fading out where it would be too fine to see
+  float scale = .12;
+  float fade = smoothstep(4., 9., scale * vPpu / 4.);
+  c *= mix(1., turf(floor(vTex + .5), vW / scale), fade);
   if (leafy > .5) {
     // clumps of needles at two scales
     c *= .9 + .1 * clumps(vW * 40.);   // only a hint of tufts, in keeping with the map
@@ -454,7 +505,7 @@ void main(){
         gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 0, 0)
         gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0)
         gl.uniform1f(gl.getUniformLocation(landProg, "leafy"), 0)
-        bind(landProg, landMesh.buf, [["p", 2], ["col", 3]])
+        bind(landProg, landMesh.buf, [["p", 2], ["col", 3], ["tex", 1]])
         gl.drawArrays(gl.TRIANGLES, 0, landMesh.count)
         gl.disable(gl.STENCIL_TEST)
         gl.useProgram(lines)
@@ -517,7 +568,7 @@ void main(){
           treeUniforms(landProg)
           gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 6 * devicePixelRatio, 8 * devicePixelRatio)
           gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0.28)
-          bind(landProg, canopyMesh.buf, [["p", 2], ["col", 3]])
+          bind(landProg, canopyMesh.buf, [["p", 2], ["col", 3], ["tex", 1]])
           gl.drawArrays(gl.TRIANGLES, 0, canopyMesh.count)
         }
         gl.useProgram(lines)
@@ -531,7 +582,7 @@ void main(){
           gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 0, 0)
           gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0)
           gl.uniform1f(gl.getUniformLocation(landProg, "leafy"), 1)
-          bind(landProg, canopyMesh.buf, [["p", 2], ["col", 3]])
+          bind(landProg, canopyMesh.buf, [["p", 2], ["col", 3], ["tex", 1]])
           gl.drawArrays(gl.TRIANGLES, 0, canopyMesh.count)
         }
         gl.useProgram(lines)
@@ -596,7 +647,7 @@ void main(){
         [1, 0],
         [1, 1],
       ]
-      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6 }
+      const STYLE = { rhumb: 1, river: 2, road: 3, route: 4, branch: 5, region: 6, border: 8 }
       // lines: six vertices per segment, with the run of hyperbolic length for dashes
       const buildLines = (list) => {
         let segs = 0
@@ -653,10 +704,12 @@ void main(){
         const rgb = new Uint8Array(bin, 8 + nv * 8, nv * 3)
         const off = 8 + nv * 11
         const idx = new Uint32Array(bin.slice(off, off + nt * 12))
-        const out = new Float32Array(nt * 3 * 5)
+        const texOff = off + nt * 12
+        const tex = bin.byteLength >= texOff + nt ? new Uint8Array(bin, texOff, nt) : null
+        const out = new Float32Array(nt * 3 * 6)
         for (let i = 0; i < nt * 3; i++) {
           const v = idx[i]
-          out.set([xy[v * 2], xy[v * 2 + 1], rgb[v * 3] / 255, rgb[v * 3 + 1] / 255, rgb[v * 3 + 2] / 255], i * 5)
+          out.set([xy[v * 2], xy[v * 2 + 1], rgb[v * 3] / 255, rgb[v * 3 + 1] / 255, rgb[v * 3 + 2] / 255, tex ? tex[(i / 3) | 0] : 0], i * 6)
         }
         const buf = gl.createBuffer()
         gl.bindBuffer(gl.ARRAY_BUFFER, buf)
@@ -664,23 +717,7 @@ void main(){
         return { buf, count: nt * 3 }
       }
       if (canopyBin) canopyMesh = readMesh(canopyBin)
-      if (landBin) {
-        const head = new Uint32Array(landBin, 0, 2)
-        const [nv, nt] = head
-        const xy = new Float32Array(landBin, 8, nv * 2)
-        const rgb = new Uint8Array(landBin, 8 + nv * 8, nv * 3)
-        const off = 8 + nv * 11
-        const idx = new Uint32Array(landBin.slice(off, off + nt * 12))
-        const out = new Float32Array(nt * 3 * 5)
-        for (let i = 0; i < nt * 3; i++) {
-          const v = idx[i]
-          out.set([xy[v * 2], xy[v * 2 + 1], rgb[v * 3] / 255, rgb[v * 3 + 1] / 255, rgb[v * 3 + 2] / 255], i * 5)
-        }
-        const buf = gl.createBuffer()
-        gl.bindBuffer(gl.ARRAY_BUFFER, buf)
-        gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW)
-        landMesh = { buf, count: nt * 3 }
-      }
+      if (landBin) landMesh = readMesh(landBin)
       ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
       if (world.places && placesImg) {
         placeSprites = buildSprites(world.sprites, world.places)
