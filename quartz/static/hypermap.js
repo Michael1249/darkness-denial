@@ -19,6 +19,7 @@
   const BANK = [0.29, 0.208, 0.125]
   const WATER = [0.925, 0.863, 0.706]
   const BARK_GROUND = [0.6, 0.5, 0.38] // roots: muted towards the parchment
+  const SHOW_BORDERS = false // the dash-dot borders of the marsh's holdings: hidden for now
   const BARK_TREE = [0.66, 0.53, 0.37]
 
   // ---- complex numbers and disk automorphisms z -> (a z + b) / (conj(b) z + conj(a))
@@ -690,7 +691,10 @@ void main(){
         gl.bufferData(gl.ARRAY_BUFFER, sv.subarray(0, o), gl.STATIC_DRAW)
         return { buf, count: o / 11 }
       }
-      ;({ buf: lineBuf, count: lineCount } = buildLines(world.lines.filter((l) => l.k !== "river")))
+      // the holdings' borders are in the data but hidden for now (SHOW_BORDERS)
+      ;({ buf: lineBuf, count: lineCount } = buildLines(
+        world.lines.filter((l) => l.k !== "river" && (SHOW_BORDERS || l.k !== "border")),
+      ))
       riverLines = buildLines(world.lines.filter((l) => l.k === "river"))
       // coloured meshes: uint32 vertices, uint32 triangles, float32 xy, uint8 rgb, uint32 indices
       const readMesh = (bin) => {
