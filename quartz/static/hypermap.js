@@ -832,6 +832,7 @@ void main(){
     // the view centre may not go farther than REACH from the Tree; at the limit it slides along
     const R_REACH = Math.tanh(REACH / 2)
     const move = (mv) => {
+      tip.style.opacity = 0 // the map moves under the tip: it goes
       let next = compose(mv, view)
       const c = apply(inverse(next), [0, 0])
       const l = Math.hypot(c[0], c[1])
@@ -901,46 +902,41 @@ void main(){
       }
       return best
     }
-    const hover = (e) => {
-      if (pointers.size || e.pointerType === "touch") return
+    // the tip: like any tooltip, it shows only when the pointer has rested a moment, and goes
+    // at once on any move, press, drag, wheel or leaving; regions are not lit up
+    const TIP_DELAY = 500
+    let tipTimer = 0
+    const hideTip = () => {
+      clearTimeout(tipTimer)
+      tip.style.opacity = 0
+    }
+    const showTip = (x, y) => {
+      if (pointers.size) return
       const r = canvas.getBoundingClientRect()
-      const note = noteAt(e.clientX, e.clientY)
+      const note = noteAt(x, y)
       if (note) {
-        if (hovered) {
-          hovered = null
-          redraw()
-        }
         tip.innerHTML = `<b>${note.name}</b><span>${note.people}</span><p>${note.note}</p>`
-        tip.style.left = `${e.clientX - r.left + 14}px`
-        tip.style.top = `${e.clientY - r.top + 14}px`
-        tip.style.opacity = 1
-        return
+      } else {
+        const top = regionsAt(x, y)[0]
+        if (!top) return
+        // the realm and its people; below it, the land under the pointer
+        const land = top.set === "ground" ? landAt(x, y) : null
+        tip.innerHTML = `<b>${top.name}</b><span>${top.kind}</span>` + (land ? `<i>${land.name} · ${land.kind}</i>` : "")
       }
-      const found = regionsAt(e.clientX, e.clientY)
-      const top = found[0] || null
-      if (top !== hovered) {
-        hovered = top
-        redraw()
-      }
-      if (!top) {
-        tip.style.opacity = 0
-        return
-      }
-      // the realm and its people; below it, the land under the pointer
-      const land = top.set === "ground" ? landAt(e.clientX, e.clientY) : null
-      tip.innerHTML =
-        `<b>${top.name}</b><span>${top.kind}</span>` +
-        (land ? `<i>${land.name} · ${land.kind}</i>` : "")
-      tip.style.left = `${e.clientX - r.left + 14}px`
-      tip.style.top = `${e.clientY - r.top + 14}px`
+      tip.style.left = `${x - r.left + 14}px`
+      tip.style.top = `${y - r.top + 14}px`
       tip.style.opacity = 1
     }
-    canvas.addEventListener("pointermove", hover)
-    canvas.addEventListener("pointerleave", () => {
-      hovered = null
-      tip.style.opacity = 0
-      redraw()
+    canvas.addEventListener("pointermove", (e) => {
+      hideTip()
+      if (pointers.size || e.pointerType === "touch") return
+      const x = e.clientX
+      const y = e.clientY
+      tipTimer = setTimeout(() => showTip(x, y), TIP_DELAY)
     })
+    canvas.addEventListener("pointerleave", hideTip)
+    canvas.addEventListener("pointerdown", hideTip)
+    canvas.addEventListener("wheel", hideTip, { passive: true })
 
     const half = () => {
       const r = canvas.getBoundingClientRect()
