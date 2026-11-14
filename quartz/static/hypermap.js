@@ -371,6 +371,7 @@ void main(){
     let treeTex = null
     let regions = []
     let lands = [] // the biomes' lands: not drawn, only named in the tip under a realm
+    let notes = [] // places with a note of their own, read when the pointer rests on them
     let regionLines = null
     let hovered = null
     let spriteCount = 0
@@ -729,6 +730,7 @@ void main(){
         }
         regionLines = buildLines(list)
       }
+      notes = world.notes || []
       lands = (world.lands || []).map((r) => {
         const rings = r.rings.map((flat) => {
           const pts = []
@@ -842,9 +844,41 @@ void main(){
       const [x, y] = apply(inverse(view), toDisk(cx, cy))
       return lands.find((r) => x >= r.box[0] && x <= r.box[2] && y >= r.box[1] && y <= r.box[3] && r.rings.reduce((c, ring) => c !== inside(ring, x, y), false))
     }
+    // the place under the pointer, if it has a note: within about its glyph's reach on screen
+    const noteAt = (cx, cy) => {
+      const [x0, y0, h] = half()
+      let best = null
+      let bd = 1e9
+      for (const n of notes) {
+        const p = apply(view, [n.x, n.y])
+        const l2 = p[0] ** 2 + p[1] ** 2
+        if (l2 >= 1) continue
+        const sx = x0 + p[0] * zoom * h
+        const sy = y0 + p[1] * zoom * h
+        const reach = Math.max(14, 0.07 * (1 - l2) * 0.5 * zoom * h)
+        const d = Math.hypot(cx - sx, cy - (sy - reach * 0.4))
+        if (d < reach && d < bd) {
+          bd = d
+          best = n
+        }
+      }
+      return best
+    }
     const hover = (e) => {
       if (pointers.size || e.pointerType === "touch") return
       const r = canvas.getBoundingClientRect()
+      const note = noteAt(e.clientX, e.clientY)
+      if (note) {
+        if (hovered) {
+          hovered = null
+          redraw()
+        }
+        tip.innerHTML = `<b>${note.name}</b><span>${note.people}</span><p>${note.note}</p>`
+        tip.style.left = `${e.clientX - r.left + 14}px`
+        tip.style.top = `${e.clientY - r.top + 14}px`
+        tip.style.opacity = 1
+        return
+      }
       const found = regionsAt(e.clientX, e.clientY)
       const top = found[0] || null
       if (top !== hovered) {
