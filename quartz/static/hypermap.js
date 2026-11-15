@@ -906,7 +906,7 @@ void main(){
             list.push({ w: 0.02, a: 0.16, k: "region", pts: flat })
             list.push({ w: 0.0035, a: 0.8, k: "region", pts: flat })
           }
-          return { name: r.name, kind: r.kind, set: r.set, rings, area: Math.abs(area) / 2, box, from: start, to: list.length }
+          return { name: r.name, kind: r.kind, about: r.about, set: r.set, rings, area: Math.abs(area) / 2, box, from: start, to: list.length }
         })
         // vertex offsets of each region's lines inside the shared buffer
         let v = 0
@@ -1091,7 +1091,10 @@ void main(){
         if (!top) return
         // the realm and its people; below it, the land under the pointer
         const land = top.set === "ground" ? landAt(x, y) : null
-        tip.innerHTML = `<b>${top.name}</b><span>${top.kind}</span>` + (land ? `<i>${land.name} · ${land.kind}</i>` : "")
+        tip.innerHTML =
+          `<b>${top.name}</b><span>${top.kind}</span>` +
+          (top.about ? `<p>${top.about}</p>` : "") +
+          (land ? `<i>${land.name} · ${land.kind}</i>` : "")
       }
       tip.style.left = `${x - r.left + 14}px`
       tip.style.top = `${y - r.top + 14}px`
