@@ -293,6 +293,17 @@ void main(){
   gl_FragColor = vec4(haze.rgb * a, a);
 }`
 
+  // the regions layer: each land of the peoples filled with its colour, see-through
+  const REG_V = `${COMMON}
+attribute vec2 p; attribute vec3 col;
+varying vec3 vC;
+void main(){ vC = col; gl_Position = clip(px(mob(p)), 0.); }`
+  const REG_F = `
+precision highp float;
+varying vec3 vC;
+uniform float alpha;
+void main(){ gl_FragColor = vec4(vC * alpha, alpha); }`
+
   // the land: a triangle mesh coloured by biome, mottled like old paper
   const LAND_V = `${COMMON}
 attribute vec2 p; attribute vec3 col; attribute float tex;
@@ -429,6 +440,9 @@ void main(){
     fetch(base + "canopy.bin")
       .then((r) => (r.ok ? r.arrayBuffer() : null))
       .catch(() => null),
+    fetch(base + "regions.bin")
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .catch(() => null),
   ])
 
   function setup(host) {
@@ -462,9 +476,15 @@ void main(){
     const labelProg = program(LABEL_V, LABEL_F)
     const fillProg = program(FILL_V, FILL_F)
     const landProg = program(LAND_V, LAND_F)
+    const regProg = program(REG_V, REG_F)
     const hazeProg = program(HAZE_V, HAZE_F)
     let treeHaze = null
     let landMesh = null
+    let regionsMesh = null // the lands of the peoples, filled in their colours (the regions layer)
+    let regionsOn = false
+    try {
+      regionsOn = localStorage.getItem("dd-map-regions") === "1"
+    } catch {}
     let riverLines = null
     let placeSprites = null
     let canopyMesh = null
@@ -617,6 +637,13 @@ void main(){
         bind(landProg, landMesh.buf, [["p", 2], ["col", 3], ["tex", 1]])
         gl.drawArrays(gl.TRIANGLES, 0, landMesh.count)
         gl.disable(gl.STENCIL_TEST)
+        if (regionsOn && regionsMesh) {
+          gl.useProgram(regProg)
+          uniforms(regProg)
+          gl.uniform1f(gl.getUniformLocation(regProg, "alpha"), 0.5)
+          bind(regProg, regionsMesh.buf, [["p", 2], ["col", 3], ["tex", 1]])
+          gl.drawArrays(gl.TRIANGLES, 0, regionsMesh.count)
+        }
         gl.useProgram(lines)
       }
       bind(lines, lineBuf, LINE_LAYOUT)
@@ -753,7 +780,7 @@ void main(){
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       return tex
     }
-    data.then(([world, img, labelImg, treeImg, placesImg, landBin, canopyBin]) => {
+    data.then(([world, img, labelImg, treeImg, placesImg, landBin, canopyBin, regionsBin]) => {
       limits = [world.limits.coast, world.limits.ocean, world.limits.ice]
       const CORNERS = [
         [0, -1],
@@ -845,6 +872,7 @@ void main(){
       }
       if (canopyBin) canopyMesh = readMesh(canopyBin)
       if (landBin) landMesh = readMesh(landBin)
+      if (regionsBin) regionsMesh = readMesh(regionsBin)
       ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
       if (world.places && placesImg) {
         placeSprites = buildSprites(world.sprites, world.places)
@@ -1245,6 +1273,22 @@ void main(){
       "</svg>"
     bar.lastChild.dataset.tree = "1"
     bar.lastChild.classList.toggle("dd-on", treeOn)
+    // the regions layer: the lands of the peoples, each in its own colour
+    button("", "Регионы: показать или скрыть", () => {
+      regionsOn = !regionsOn
+      try {
+        localStorage.setItem("dd-map-regions", regionsOn ? "1" : "0")
+      } catch {}
+      bar.querySelector("[data-regions]").classList.toggle("dd-on", regionsOn)
+      redraw()
+    })
+    bar.lastChild.innerHTML =
+      '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:block;margin:auto" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">' +
+      '<path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>' +
+      '<path d="M3 6l6-2v14l-6 2z" fill="currentColor" opacity=".35"/><path d="M15 6l6-2v14l-6 2z" fill="currentColor" opacity=".2"/>' +
+      "</svg>"
+    bar.lastChild.dataset.regions = "1"
+    bar.lastChild.classList.toggle("dd-on", regionsOn)
     // the projection, in turn: the disk (the far lands shrink towards the rim), the equal-area
     // plane (every land at its true size: the middle smaller, the far lands opened out) and the
     // equidistant plane (every place at its true distance from the middle of the window). It
