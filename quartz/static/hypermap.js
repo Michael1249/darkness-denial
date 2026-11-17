@@ -201,7 +201,7 @@ void main(){
   vec2 C = mob(c);
   float s = anchorSize.z * unit(C);
   vec2 cs = px(C);
-  if (s < 2.5 || cs.x < -s || cs.y < -s || cs.x > screen.x + s || cs.y > screen.y + s * 2.) {
+  if (s < 2. || cs.x < -s || cs.y < -s || cs.x > screen.x + s || cs.y > screen.y + s * 2.) {
     gl_Position = vec4(2., 2., 2., 1.); return;
   }
   vec2 pos = cs + (corner - anchorSize.xy) * s;
