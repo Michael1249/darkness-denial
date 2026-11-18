@@ -319,6 +319,7 @@ void main(){
 precision highp float;
 varying vec3 vC; varying vec2 vP; varying float vTex; varying float vPpu;
 uniform float shade;   // above 0: draw only a translucent shadow
+uniform float plain;   // above 0: the plan view, the land in one flat colour
 uniform float leafy;   // 1 for the Tree's foliage: tufts of needles over the colour
 vec2 hash2(vec2 p){ return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
 // rounded clumps (cellular noise): light on each clump's north-west side, dark gaps between
@@ -379,6 +380,7 @@ float turf(float id, vec2 q){
 }
 void main(){
   if (shade > 0.) { gl_FragColor = vec4(vec3(.17, .12, .06) * shade, shade); return; }
+  if (plain > 0.) { gl_FragColor = vec4(.84, .745, .55, 1.); return; }
   // Texture coordinates of even size in hyperbolic units, everywhere: the disk point is
   // conformal (shapes keep their proportions) but the plane's scale grows towards the rim, by
   // lambda = 2 / (1 - |p|^2). So the disk point is scaled by the two powers of two either side
@@ -482,8 +484,17 @@ void main(){
     let landMesh = null
     let regionsMesh = null // the lands of the peoples, filled in their colours (the regions layer)
     let regionsOn = false
+    // the map's look: 0 drawn, 1 drawn with the lands coloured, 2 the plan (flat land, rivers,
+    // roads, the lands' borders, mountains, every place a dot with its name)
+    let mapView = 0
+    let planSprites = null
+    let planDots = null
+    let planBorders = null
     try {
       regionsOn = localStorage.getItem("dd-map-regions") === "1"
+      const mv = localStorage.getItem("dd-map-view")
+      mapView = mv === null ? (regionsOn ? 1 : 0) : Math.max(0, Math.min(2, parseInt(mv) || 0))
+      regionsOn = mapView === 1
     } catch {}
     let riverLines = null
     let placeSprites = null
@@ -634,8 +645,10 @@ void main(){
         gl.uniform2f(gl.getUniformLocation(landProg, "offs"), 0, 0)
         gl.uniform1f(gl.getUniformLocation(landProg, "shade"), 0)
         gl.uniform1f(gl.getUniformLocation(landProg, "leafy"), 0)
+        gl.uniform1f(gl.getUniformLocation(landProg, "plain"), mapView === 2 ? 1 : 0)
         bind(landProg, landMesh.buf, [["p", 2], ["col", 3], ["tex", 1]])
         gl.drawArrays(gl.TRIANGLES, 0, landMesh.count)
+        gl.uniform1f(gl.getUniformLocation(landProg, "plain"), 0)
         gl.disable(gl.STENCIL_TEST)
         if (regionsOn && regionsMesh) {
           gl.useProgram(regProg)
@@ -662,15 +675,28 @@ void main(){
         gl.drawArrays(gl.TRIANGLES, 0, riverLines.count)
         gl.uniform1f(pass, -1)
       }
+      const plan = mapView === 2 && planSprites
+      if (plan && planBorders) {
+        // the plan shows every land's border
+        bind(lines, planBorders.buf, LINE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, planBorders.count)
+      }
       gl.enable(gl.DEPTH_TEST)
       gl.depthFunc(gl.LESS)
       gl.clear(gl.DEPTH_BUFFER_BIT)
       gl.useProgram(sprites)
       uniforms(sprites)
       gl.bindTexture(gl.TEXTURE_2D, atlasTex)
-      bind(sprites, spriteBuf, SPRITE_LAYOUT)
-      gl.drawArrays(gl.TRIANGLES, 0, spriteCount)
-      if (placeSprites) {
+      if (plan) {
+        bind(sprites, planSprites.buf, SPRITE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, planSprites.count)
+        bind(sprites, planDots.buf, SPRITE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, planDots.count)
+      } else {
+        bind(sprites, spriteBuf, SPRITE_LAYOUT)
+        gl.drawArrays(gl.TRIANGLES, 0, spriteCount)
+      }
+      if (placeSprites && !plan) {
         // settlements and great places, drawn large in their own atlas; the depth buffer is shared
         gl.bindTexture(gl.TEXTURE_2D, placesTex)
         bind(sprites, placeSprites.buf, SPRITE_LAYOUT)
@@ -874,6 +900,15 @@ void main(){
       if (landBin) landMesh = readMesh(landBin)
       if (regionsBin) regionsMesh = readMesh(regionsBin)
       ;({ buf: spriteBuf, count: spriteCount } = buildSprites(world.sprites))
+      // the plan view: of the ground's glyphs only the mountains, hills, ice and the Tree's trunk,
+      // and a dot for every place
+      const keep = /^(Pq|Pp|Pm|m|ms|sn|cr|hh|bld|ice)\d+$|^trunk$/
+      const planKinds = {}
+      for (const k in world.sprites) if (keep.test(k)) planKinds[k] = world.sprites[k]
+      planSprites = buildSprites(planKinds)
+      const dots = []
+      for (const n of world.notes || []) if (!n.layer) dots.push(n.x, n.y, 0.024)
+      planDots = buildSprites({ dot: dots })
       if (world.places && placesImg) {
         placeSprites = buildSprites(world.sprites, world.places)
         placesTex = texture(placesImg)
@@ -921,6 +956,9 @@ void main(){
           r.count = offsets[r.to] - offsets[r.from]
         }
         regionLines = buildLines(list)
+        planBorders = buildLines(
+          all.filter((r) => r.set !== "tree").flatMap((r) => r.rings.map((flat) => ({ w: 0.0028, a: 0.6, k: "region", pts: flat }))),
+        )
       }
       notes = world.notes || []
       lands = (world.lands || []).map((r) => {
@@ -1277,12 +1315,18 @@ void main(){
     bar.lastChild.dataset.tree = "1"
     bar.lastChild.classList.toggle("dd-on", treeOn)
     // the regions layer: the lands of the peoples, each in its own colour
-    button("", "Регионы: показать или скрыть", () => {
-      regionsOn = !regionsOn
+    const VIEW_TITLES = ["Вид карты: рисованная", "Вид карты: края в цвете", "Вид карты: схема"]
+    button("", VIEW_TITLES[mapView], () => {
+      mapView = (mapView + 1) % 3
+      regionsOn = mapView === 1
       try {
+        localStorage.setItem("dd-map-view", String(mapView))
         localStorage.setItem("dd-map-regions", regionsOn ? "1" : "0")
       } catch {}
-      bar.querySelector("[data-regions]").classList.toggle("dd-on", regionsOn)
+      const b = bar.querySelector("[data-regions]")
+      b.classList.toggle("dd-on", mapView > 0)
+      b.title = VIEW_TITLES[mapView]
+      b.setAttribute("aria-label", VIEW_TITLES[mapView])
       redraw()
     })
     bar.lastChild.innerHTML =
@@ -1291,7 +1335,7 @@ void main(){
       '<path d="M3 6l6-2v14l-6 2z" fill="currentColor" opacity=".35"/><path d="M15 6l6-2v14l-6 2z" fill="currentColor" opacity=".2"/>' +
       "</svg>"
     bar.lastChild.dataset.regions = "1"
-    bar.lastChild.classList.toggle("dd-on", regionsOn)
+    bar.lastChild.classList.toggle("dd-on", mapView > 0)
     // the projection, in turn: the disk (the far lands shrink towards the rim), the equal-area
     // plane (every land at its true size: the middle smaller, the far lands opened out) and the
     // equidistant plane (every place at its true distance from the middle of the window). It
